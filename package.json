@@ -1,0 +1,70 @@
+{
+  "name": "better-go-to-file",
+  "displayName": "Better Go To File",
+  "version": "0.0.1",
+  "description": "A custom Go To File popup with tunable scoring.",
+  "categories": [
+    "Other"
+  ],
+  "publisher": "local",
+  "main": "./out/extension.js",
+  "scripts": {
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
+    "compile": "bunx tsc -p .",
+    "watch": "bunx tsc -watch -p .",
+    "test": "bun test",
+    "check": "bun run fmt:check && bun run lint && bun test && bun run compile",
+    "vscode:prepublish": "bun run compile"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.10",
+    "@types/vscode": "^1.97.0",
+    "oxfmt": "^0.36.0",
+    "oxlint": "^1.51.0",
+    "typescript": "^5.8.2"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "betterGoToFile.open",
+        "title": "Better Go To File: Open"
+      },
+      {
+        "command": "betterGoToFile.inspectIcons",
+        "title": "Better Go To File: Inspect Icons"
+      }
+    ],
+    "configuration": {
+      "title": "Better Go To File",
+      "properties": {
+        "betterGoToFile.gitignoredVisibility": {
+          "type": "string",
+          "enum": [
+            "show",
+            "auto",
+            "hide"
+          ],
+          "default": "auto",
+          "markdownDescription": "Controls whether gitignored files appear in the picker. `auto` hides them unless the query looks specific."
+        },
+        "betterGoToFile.showScores": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Shows each result's ranking score in the picker detail line."
+        }
+      }
+    }
+  },
+  "activationEvents": [
+    "onCommand:betterGoToFile.inspectIcons",
+    "onCommand:betterGoToFile.open",
+    "onStartupFinished"
+  ],
+  "engines": {
+    "vscode": "^1.95.0"
+  },
+  "packageManager": "bun@1.3.10"
+}

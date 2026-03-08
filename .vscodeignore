@@ -1,0 +1,7 @@
+.gitignore
+.npm-cache/**
+.vscode/**
+.vscode-test/**
+node_modules/**
+src/**
+tsconfig.json
