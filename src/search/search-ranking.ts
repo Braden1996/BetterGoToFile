@@ -1,3 +1,6 @@
+import { DEFAULT_BETTER_GO_TO_FILE_CONFIG, type RankingConfig } from "../config/schema";
+import type { GitTrackingState } from "../workspace";
+
 export interface SearchCandidate {
   readonly basename: string;
   readonly relativePath: string;
@@ -5,8 +8,6 @@ export interface SearchCandidate {
   readonly searchBasename: string;
   readonly searchPath: string;
 }
-
-export type GitTrackingState = "tracked" | "untracked" | "ignored" | "unknown";
 
 export interface SearchContext<T extends SearchCandidate = SearchCandidate> {
   readonly activePath?: string;
@@ -21,24 +22,16 @@ export interface ScoredSearchCandidate<T extends SearchCandidate = SearchCandida
   readonly total: number;
 }
 
-const BASENAME_EXACT_SCORE = 5600;
-const PATH_EXACT_SCORE = 5200;
-const BASENAME_PREFIX_SCORE = 4700;
-const PATH_PREFIX_SCORE = 4300;
-const BASENAME_BOUNDARY_SCORE = 3900;
-const PATH_BOUNDARY_SCORE = 3200;
-const BASENAME_SUBSTRING_SCORE = 3000;
-const PATH_SUBSTRING_SCORE = 2500;
-const BASENAME_FUZZY_BONUS = 1800;
-const PATH_FUZZY_BONUS = 900;
-
 export function rankSearchCandidates<T extends SearchCandidate>(
   candidates: readonly T[],
   query: string,
   context: SearchContext<T> = {},
   limit = 200,
+  ranking: RankingConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.ranking,
 ): T[] {
-  return scoreSearchCandidates(candidates, query, context, limit).map(({ candidate }) => candidate);
+  return scoreSearchCandidates(candidates, query, context, limit, ranking).map(
+    ({ candidate }) => candidate,
+  );
 }
 
 export function scoreSearchCandidates<T extends SearchCandidate>(
@@ -46,6 +39,7 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
   query: string,
   context: SearchContext<T> = {},
   limit = 200,
+  ranking: RankingConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.ranking,
 ): ScoredSearchCandidate<T>[] {
   const normalizedQuery = query.trim().toLowerCase();
 
@@ -54,7 +48,7 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
       .map((candidate) => ({
         candidate,
         lexical: 0,
-        total: computeContextBoost(candidate, context, false),
+        total: computeContextBoost(candidate, context, false, ranking),
       }))
       .sort(
         (left, right) =>
@@ -65,13 +59,13 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
 
   const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
   const ranked = candidates.flatMap((candidate) => {
-    const lexical = scoreCandidateLexical(candidate, tokens);
+    const lexical = scoreCandidateLexical(candidate, tokens, ranking);
 
     if (lexical === null) {
       return [];
     }
 
-    const total = lexical + computeContextBoost(candidate, context, true);
+    const total = lexical + computeContextBoost(candidate, context, true, ranking);
 
     return [{ candidate, lexical, total }];
   });
@@ -96,11 +90,12 @@ export function compareSearchCandidates(left: SearchCandidate, right: SearchCand
 function scoreCandidateLexical(
   candidate: SearchCandidate,
   tokens: readonly string[],
+  ranking: RankingConfig,
 ): number | null {
   let total = 0;
 
   for (const token of tokens) {
-    const tokenScore = scoreToken(candidate, token);
+    const tokenScore = scoreToken(candidate, token, ranking);
 
     if (tokenScore === null) {
       return null;
@@ -114,23 +109,28 @@ function scoreCandidateLexical(
   return total;
 }
 
-function scoreToken(candidate: SearchCandidate, token: string): number | null {
+function scoreToken(
+  candidate: SearchCandidate,
+  token: string,
+  ranking: RankingConfig,
+): number | null {
+  const { lexical } = ranking;
   const expectsPath = token.includes("/") || token.includes("\\");
 
   if (candidate.searchBasename === token) {
-    return BASENAME_EXACT_SCORE - candidate.basename.length;
+    return lexical.basenameExactScore - candidate.basename.length;
   }
 
   if (candidate.searchPath === token) {
-    return PATH_EXACT_SCORE - candidate.relativePath.length;
+    return lexical.pathExactScore - candidate.relativePath.length;
   }
 
   if (expectsPath && candidate.searchPath.startsWith(token)) {
-    return PATH_PREFIX_SCORE - candidate.relativePath.length;
+    return lexical.pathPrefixScore - candidate.relativePath.length;
   }
 
   if (candidate.searchBasename.startsWith(token)) {
-    return BASENAME_PREFIX_SCORE - candidate.basename.length;
+    return lexical.basenamePrefixScore - candidate.basename.length;
   }
 
   const basenameBoundaryIndex = findBoundaryIndex(
@@ -140,37 +140,37 @@ function scoreToken(candidate: SearchCandidate, token: string): number | null {
   );
 
   if (basenameBoundaryIndex >= 0) {
-    return BASENAME_BOUNDARY_SCORE - basenameBoundaryIndex * 10 - candidate.basename.length;
+    return lexical.basenameBoundaryScore - basenameBoundaryIndex * 10 - candidate.basename.length;
   }
 
   const basenameIndex = candidate.searchBasename.indexOf(token);
 
   if (basenameIndex >= 0) {
-    return BASENAME_SUBSTRING_SCORE - basenameIndex * 8 - candidate.basename.length;
+    return lexical.basenameSubstringScore - basenameIndex * 8 - candidate.basename.length;
   }
 
   const pathBoundaryIndex = findBoundaryIndex(candidate.relativePath, candidate.searchPath, token);
 
   if (pathBoundaryIndex >= 0) {
-    return PATH_BOUNDARY_SCORE - pathBoundaryIndex * 4 - candidate.relativePath.length * 0.2;
+    return lexical.pathBoundaryScore - pathBoundaryIndex * 4 - candidate.relativePath.length * 0.2;
   }
 
   const pathIndex = candidate.searchPath.indexOf(token);
 
   if (pathIndex >= 0) {
-    return PATH_SUBSTRING_SCORE - pathIndex * 3 - candidate.relativePath.length * 0.1;
+    return lexical.pathSubstringScore - pathIndex * 3 - candidate.relativePath.length * 0.1;
   }
 
   const basenameFuzzyScore = scoreFuzzyToken(token, candidate.basename, candidate.searchBasename);
 
   if (basenameFuzzyScore !== null) {
-    return BASENAME_FUZZY_BONUS + basenameFuzzyScore;
+    return lexical.basenameFuzzyBonus + basenameFuzzyScore;
   }
 
   const pathFuzzyScore = scoreFuzzyToken(token, candidate.relativePath, candidate.searchPath);
 
   if (pathFuzzyScore !== null) {
-    return PATH_FUZZY_BONUS + pathFuzzyScore;
+    return lexical.pathFuzzyBonus + pathFuzzyScore;
   }
 
   return null;
@@ -240,30 +240,35 @@ function computeContextBoost<T extends SearchCandidate>(
   candidate: T,
   context: SearchContext<T>,
   hasQuery: boolean,
+  ranking: RankingConfig,
 ): number {
+  const { context: config } = ranking;
   let boost = 0;
   const frecencyScore = context.getFrecencyScore?.(candidate.relativePath) ?? 0;
 
   if (frecencyScore > 0) {
-    boost += Math.round(Math.log2(1 + frecencyScore) * (hasQuery ? 140 : 240));
+    boost += Math.round(
+      Math.log2(1 + frecencyScore) *
+        (hasQuery ? config.frecencyQueryMultiplier : config.frecencyBrowseMultiplier),
+    );
   }
 
   const gitTrackingState = context.getGitTrackingState?.(candidate);
 
   if (gitTrackingState === "tracked") {
-    boost += hasQuery ? 120 : 240;
+    boost += hasQuery ? config.trackedQueryBoost : config.trackedBrowseBoost;
   } else if (gitTrackingState === "ignored") {
-    boost -= hasQuery ? 1800 : 3000;
+    boost -= hasQuery ? config.ignoredQueryPenalty : config.ignoredBrowsePenalty;
   } else if (gitTrackingState === "untracked") {
-    boost -= hasQuery ? 1100 : 2200;
+    boost -= hasQuery ? config.untrackedQueryPenalty : config.untrackedBrowsePenalty;
   }
 
   if (context.openPaths?.has(candidate.relativePath)) {
-    boost += hasQuery ? 170 : 320;
+    boost += hasQuery ? config.openQueryBoost : config.openBrowseBoost;
   }
 
   if (context.activePath === candidate.relativePath) {
-    boost += hasQuery ? 120 : 260;
+    boost += hasQuery ? config.activeQueryBoost : config.activeBrowseBoost;
   }
 
   const activeDirectory = getDirectory(context.activePath);
@@ -273,16 +278,18 @@ function computeContextBoost<T extends SearchCandidate>(
   }
 
   if (candidate.directory === activeDirectory) {
-    boost += hasQuery ? 110 : 210;
+    boost += hasQuery ? config.sameDirectoryQueryBoost : config.sameDirectoryBrowseBoost;
     return boost;
   }
 
   const sharedPrefixSegments = countSharedPrefixSegments(candidate.directory, activeDirectory);
 
   if (sharedPrefixSegments >= 2) {
-    boost += sharedPrefixSegments * (hasQuery ? 40 : 70);
+    boost +=
+      sharedPrefixSegments *
+      (hasQuery ? config.sharedPrefixSegmentQueryBoost : config.sharedPrefixSegmentBrowseBoost);
   } else if (sharedPrefixSegments === 1) {
-    boost += hasQuery ? 24 : 44;
+    boost += hasQuery ? config.sharedPrefixSingleQueryBoost : config.sharedPrefixSingleBrowseBoost;
   }
 
   return boost;

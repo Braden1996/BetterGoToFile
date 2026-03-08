@@ -5,6 +5,7 @@ Minimal VS Code extension scaffold for a custom "Go To File" popup.
 ## What it does
 
 - Adds the `Better Go To File: Open` command.
+- Adds the `Better Go To File: Inspect Contributor Relationships` command for git-history diagnostics.
 - Shows a Quick Pick with file names and relative paths.
 - Keeps a warm workspace index in memory after startup.
 - Learns from editor activity with a persisted frecency store.

@@ -1,42 +1,68 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { toRelativeWorkspacePath, type FileEntry } from "./file-entry";
+import { type BetterGoToFileConfig, BetterGoToFileConfigStore } from "../config";
+import {
+  ContributorRelationshipIndex,
+  type FileEntry,
+  GitTrackedIndex,
+  type WorkspaceContributorRelationshipSnapshot,
+  toRelativeWorkspacePath,
+  WorkspaceFileIndex,
+} from "../workspace";
 import { FrecencyStore } from "./frecency-store";
-import { GitTrackedIndex } from "./git-tracked-index";
 import type { FileSearchRankingContext } from "./file-search";
-import { WorkspaceFileIndex } from "./workspace-index";
-
-const IMPLICIT_OPEN_WEIGHT = 1;
-const EXPLICIT_OPEN_WEIGHT = 2;
-const EDITOR_DWELL_MS = 900;
-const DUPLICATE_VISIT_WINDOW_MS = 15_000;
 
 export class SearchRuntime implements vscode.Disposable {
+  private readonly emitter = new vscode.EventEmitter<void>();
   private readonly index: WorkspaceFileIndex;
   private readonly frecencyStore: FrecencyStore;
   private readonly gitTrackedIndex: GitTrackedIndex;
+  private readonly contributorRelationshipIndex: ContributorRelationshipIndex;
   private readonly disposables: vscode.Disposable[] = [];
   private readonly recentVisits = new Map<string, number>();
+  private config: BetterGoToFileConfig;
   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
+
+  readonly onDidChange = this.emitter.event;
 
   constructor(
     context: vscode.ExtensionContext,
+    private readonly configStore: BetterGoToFileConfigStore,
     private readonly log?: (message: string) => void,
   ) {
+    this.config = configStore.get();
+
     const frecencyPath = context.storageUri
       ? path.join(context.storageUri.fsPath, "frecency.json")
       : undefined;
 
-    this.index = new WorkspaceFileIndex(log);
-    this.frecencyStore = new FrecencyStore(frecencyPath);
-    this.gitTrackedIndex = new GitTrackedIndex(log);
+    this.index = new WorkspaceFileIndex(this.config.workspaceIndex, log);
+    this.frecencyStore = new FrecencyStore(frecencyPath, this.config.frecency);
+    this.gitTrackedIndex = new GitTrackedIndex(this.config.git, log);
+    this.contributorRelationshipIndex = new ContributorRelationshipIndex(log);
 
     this.disposables.push(
+      this.emitter,
+      this.configStore,
       this.index,
       { dispose: () => this.frecencyStore.dispose() },
       this.gitTrackedIndex,
+      this.contributorRelationshipIndex,
+      this.index.onDidChange(() => {
+        this.emitter.fire();
+      }),
+      this.gitTrackedIndex.onDidChange(() => {
+        this.emitter.fire();
+      }),
+      this.configStore.onDidChange(({ current }) => {
+        this.applyConfig(current);
+      }),
       vscode.window.onDidChangeActiveTextEditor((editor) => {
         this.scheduleImplicitOpen(editor);
+        this.emitter.fire();
+      }),
+      vscode.window.tabGroups.onDidChangeTabs(() => {
+        this.emitter.fire();
       }),
     );
 
@@ -44,7 +70,15 @@ export class SearchRuntime implements vscode.Disposable {
   }
 
   async ready(): Promise<void> {
-    await Promise.all([this.index.ready(), this.frecencyStore.ready()]);
+    await Promise.all([
+      this.index.ready(),
+      this.frecencyStore.ready(),
+      this.gitTrackedIndex.ready(),
+    ]);
+  }
+
+  getConfig(): BetterGoToFileConfig {
+    return this.config;
   }
 
   getEntries(): readonly FileEntry[] {
@@ -66,7 +100,16 @@ export class SearchRuntime implements vscode.Disposable {
     const now = Date.now();
 
     this.rememberVisit(relativePath, now);
-    this.frecencyStore.recordOpen(relativePath, { now, weight: EXPLICIT_OPEN_WEIGHT });
+    this.frecencyStore.recordOpen(relativePath, {
+      now,
+      weight: this.config.visits.explicitOpenWeight,
+    });
+  }
+
+  async inspectContributorRelationships(): Promise<
+    readonly WorkspaceContributorRelationshipSnapshot[]
+  > {
+    return this.contributorRelationshipIndex.inspectWorkspaceFolders();
   }
 
   dispose(): void {
@@ -78,6 +121,15 @@ export class SearchRuntime implements vscode.Disposable {
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
+  }
+
+  private applyConfig(config: BetterGoToFileConfig): void {
+    this.config = config;
+    this.index.updateConfig(config.workspaceIndex);
+    this.frecencyStore.updateOptions(config.frecency);
+    this.gitTrackedIndex.updateConfig(config.git);
+    this.scheduleImplicitOpen(vscode.window.activeTextEditor);
+    this.emitter.fire();
   }
 
   private scheduleImplicitOpen(editor: vscode.TextEditor | undefined): void {
@@ -95,7 +147,7 @@ export class SearchRuntime implements vscode.Disposable {
     this.pendingTimer = setTimeout(() => {
       this.pendingTimer = undefined;
       this.recordImplicitOpen(relativePath);
-    }, EDITOR_DWELL_MS);
+    }, this.config.visits.editorDwellMs);
   }
 
   private recordImplicitOpen(relativePath: string): void {
@@ -106,20 +158,25 @@ export class SearchRuntime implements vscode.Disposable {
     }
 
     this.rememberVisit(relativePath, now);
-    this.frecencyStore.recordOpen(relativePath, { now, weight: IMPLICIT_OPEN_WEIGHT });
+    this.frecencyStore.recordOpen(relativePath, {
+      now,
+      weight: this.config.visits.implicitOpenWeight,
+    });
   }
 
   private isDuplicateVisit(relativePath: string, now: number): boolean {
     const lastVisit = this.recentVisits.get(relativePath);
 
-    return typeof lastVisit === "number" && now - lastVisit < DUPLICATE_VISIT_WINDOW_MS;
+    return (
+      typeof lastVisit === "number" && now - lastVisit < this.config.visits.duplicateVisitWindowMs
+    );
   }
 
   private rememberVisit(relativePath: string, now: number): void {
     this.recentVisits.set(relativePath, now);
 
     for (const [pathKey, lastVisit] of this.recentVisits.entries()) {
-      if (now - lastVisit > DUPLICATE_VISIT_WINDOW_MS) {
+      if (now - lastVisit > this.config.visits.duplicateVisitWindowMs) {
         this.recentVisits.delete(pathKey);
       }
     }

@@ -31,12 +31,13 @@ const DEFAULT_MAX_RECORDS = 20000;
 const MIN_PERSISTED_SCORE = 0.05;
 
 export class FrecencyStore {
-  private readonly halfLifeMs: number;
-  private readonly flushDelayMs: number;
-  private readonly maxRecords: number;
+  private halfLifeMs: number;
+  private flushDelayMs: number;
+  private maxRecords: number;
   private readonly records = new Map<string, FrecencyRecord>();
   private readonly readyPromise: Promise<void>;
   private flushTimer: ReturnType<typeof setTimeout> | undefined;
+  private flushPromise = Promise.resolve();
   private dirty = false;
 
   constructor(
@@ -51,6 +52,21 @@ export class FrecencyStore {
 
   async ready(): Promise<void> {
     await this.readyPromise;
+  }
+
+  updateOptions(options: FrecencyStoreOptions = {}): void {
+    this.halfLifeMs = options.halfLifeMs ?? DEFAULT_HALF_LIFE_MS;
+    this.flushDelayMs = options.flushDelayMs ?? DEFAULT_FLUSH_DELAY_MS;
+    this.maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
+
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+
+    if (this.dirty) {
+      this.scheduleFlush();
+    }
   }
 
   getCurrentScore(relativePath: string, now = Date.now()): number {
@@ -75,7 +91,26 @@ export class FrecencyStore {
   }
 
   async flush(): Promise<void> {
+    this.flushPromise = this.flushPromise.then(() => this.flushNow());
+    await this.flushPromise;
+  }
+
+  dispose(): void {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+
+    void this.flush();
+  }
+
+  private async flushNow(): Promise<void> {
     await this.ready();
+
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
 
     if (!this.filePath || !this.dirty) {
       return;
@@ -88,15 +123,6 @@ export class FrecencyStore {
     await fs.writeFile(this.filePath, JSON.stringify(snapshot, null, 2), "utf8");
 
     this.dirty = false;
-  }
-
-  dispose(): void {
-    if (this.flushTimer) {
-      clearTimeout(this.flushTimer);
-      this.flushTimer = undefined;
-    }
-
-    void this.flush();
   }
 
   private async load(): Promise<void> {

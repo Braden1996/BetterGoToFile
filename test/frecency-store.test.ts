@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { decayFrecencyScore, FrecencyStore, recordFrecencyAccess } from "../src/frecency-store";
+import {
+  decayFrecencyScore,
+  FrecencyStore,
+  recordFrecencyAccess,
+} from "../src/search/frecency-store";
 
 const tempDirectories: string[] = [];
 
@@ -46,6 +50,22 @@ describe("frecency math", () => {
     expect(reloaded.getCurrentScore("src/config.ts", afterReload + 1000)).toBeGreaterThan(0.9);
 
     reloaded.dispose();
+    store.dispose();
+  });
+
+  test("applies updated options immediately", async () => {
+    const store = new FrecencyStore(undefined, { halfLifeMs: 1000, flushDelayMs: 100 });
+    const now = Date.now();
+
+    await store.ready();
+    store.recordOpen("src/config.ts", { now, weight: 2 });
+
+    expect(store.getCurrentScore("src/config.ts", now + 1000)).toBeCloseTo(1, 4);
+
+    store.updateOptions({ halfLifeMs: 2000, flushDelayMs: 0, maxRecords: 10 });
+
+    expect(store.getCurrentScore("src/config.ts", now + 1000)).toBeGreaterThan(1.3);
+
     store.dispose();
   });
 });

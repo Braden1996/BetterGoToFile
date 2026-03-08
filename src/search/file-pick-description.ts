@@ -1,70 +1,11 @@
-import * as vscode from "vscode";
-import type { FileEntry } from "./file-entry";
-import { shouldIncludeGitignoredFile, type GitignoredVisibility } from "./gitignored-visibility";
-import { scoreSearchCandidates, type GitTrackingState, type SearchContext } from "./search-ranking";
+import { DEFAULT_BETTER_GO_TO_FILE_CONFIG, type PickerDescriptionConfig } from "../config/schema";
+import type { FileEntry, GitTrackingState } from "../workspace";
 
-const MAX_VISIBLE_RESULTS = 200;
-const DEFAULT_PATH_TAIL_SEGMENTS = 3;
-const DEFAULT_COLLAPSED_TAIL_SEGMENTS = 2;
-const QUERY_CONTEXT_RADIUS = 1;
-const MAX_ROW_WIDTH_UNITS = 72;
-const LABEL_PADDING_WIDTH_UNITS = 8;
-const MIN_DESCRIPTION_WIDTH_UNITS = 16;
-
-export interface FilePickItem extends vscode.QuickPickItem {
-  readonly entry?: FileEntry;
-}
-
-export type ResolveFileIcon = (entry: FileEntry) => vscode.IconPath | undefined;
-export type FileSearchRankingContext = SearchContext<FileEntry>;
-
-export function toQuickPickItems(
-  entries: readonly FileEntry[],
-  query: string,
-  rankingContext: FileSearchRankingContext = {},
-  resolveFileIcon?: ResolveFileIcon,
-  gitignoredIconPath?: vscode.IconPath,
-  gitignoredVisibility: GitignoredVisibility = "auto",
-  showScores = false,
-): FilePickItem[] {
-  const visibleEntries = entries.filter((entry) =>
-    shouldIncludeEntry(entry, query, rankingContext, gitignoredVisibility),
-  );
-  const rankedEntries = scoreSearchCandidates(
-    visibleEntries,
-    query,
-    rankingContext,
-    MAX_VISIBLE_RESULTS,
-  );
-
-  if (!rankedEntries.length) {
-    return [
-      {
-        label: "No matching files",
-        alwaysShow: true,
-      },
-    ];
-  }
-
-  return rankedEntries.map(({ candidate: entry, total }) => {
-    const gitTrackingState = rankingContext.getGitTrackingState?.(entry) ?? "unknown";
-    const iconPath = gitTrackingState === "ignored" ? gitignoredIconPath : resolveFileIcon?.(entry);
-
-    return {
-      label: entry.basename,
-      description: buildDescription(entry, query, gitTrackingState),
-      detail: showScores ? formatScoreDetail(total) : undefined,
-      iconPath: iconPath ?? vscode.ThemeIcon.File,
-      resourceUri: iconPath ? undefined : entry.uri,
-      entry,
-    };
-  });
-}
-
-function buildDescription(
+export function buildFilePickDescription(
   entry: FileEntry,
   query: string,
   gitTrackingState: GitTrackingState,
+  config: PickerDescriptionConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.picker.description,
 ): string | undefined {
   const segments = [entry.workspaceFolderName, ...splitSegments(entry.directory)].filter(isDefined);
   const gitTag = gitTrackingState === "ignored" ? "[gitignored]" : undefined;
@@ -74,12 +15,13 @@ function buildDescription(
   }
 
   const queryTokens = tokenizeQuery(query).filter((token) => token.length > 1);
-  const availableWidth = getAvailableDescriptionWidth(entry.basename);
-  const candidates = buildDescriptionCandidates(
+  const availableWidth = getAvailableDescriptionWidth(entry.basename, config);
+  const alwaysKeptIndices = collectAlwaysKeptIndices(
     segments,
-    queryTokens,
-    Boolean(entry.workspaceFolderName),
+    entry.workspaceFolderName,
+    entry.packageRoot,
   );
+  const candidates = buildDescriptionCandidates(segments, queryTokens, alwaysKeptIndices, config);
 
   for (const candidate of candidates) {
     if (estimateTextWidth(candidate) <= availableWidth) {
@@ -122,7 +64,8 @@ function collectMatchingSegmentIndices(
 function buildDescriptionCandidates(
   segments: readonly string[],
   queryTokens: readonly string[],
-  keepFirstSegment: boolean,
+  alwaysKeptIndices: readonly number[],
+  config: PickerDescriptionConfig,
 ): string[] {
   const candidates = new Set<string>();
 
@@ -136,69 +79,65 @@ function buildDescriptionCandidates(
         collapseAroundMatches(
           segments,
           matchedIndices,
-          keepFirstSegment,
-          QUERY_CONTEXT_RADIUS,
-          DEFAULT_PATH_TAIL_SEGMENTS,
+          alwaysKeptIndices,
+          config.queryContextRadius,
+          config.pathTailSegments,
         ),
       );
       candidates.add(
         collapseAroundMatches(
           segments,
           matchedIndices,
-          keepFirstSegment,
+          alwaysKeptIndices,
           0,
-          DEFAULT_PATH_TAIL_SEGMENTS,
+          config.pathTailSegments,
         ),
       );
       candidates.add(
         collapseAroundMatches(
           segments,
           matchedIndices,
-          keepFirstSegment,
+          alwaysKeptIndices,
           0,
-          DEFAULT_COLLAPSED_TAIL_SEGMENTS,
+          config.collapsedTailSegments,
         ),
       );
     }
   }
 
-  candidates.add(collapseToTail(segments, keepFirstSegment, DEFAULT_PATH_TAIL_SEGMENTS));
-  candidates.add(collapseToTail(segments, keepFirstSegment, DEFAULT_COLLAPSED_TAIL_SEGMENTS));
-  candidates.add(collapseToTail(segments, keepFirstSegment, 1));
+  candidates.add(collapseToTail(segments, alwaysKeptIndices, config.pathTailSegments));
+  candidates.add(collapseToTail(segments, alwaysKeptIndices, config.collapsedTailSegments));
+  candidates.add(collapseToTail(segments, alwaysKeptIndices, 1));
 
   return [...candidates];
 }
 
 function collapseToTail(
   segments: readonly string[],
-  keepFirstSegment: boolean,
+  alwaysKeptIndices: readonly number[],
   tailSegmentCount: number,
 ): string {
-  if (segments.length <= tailSegmentCount + Number(keepFirstSegment)) {
-    return segments.join("/");
+  const keptIndices = new Set(alwaysKeptIndices);
+
+  for (
+    let index = Math.max(segments.length - tailSegmentCount, 0);
+    index < segments.length;
+    index += 1
+  ) {
+    keptIndices.add(index);
   }
 
-  const tail = segments.slice(-tailSegmentCount).join("/");
-
-  if (keepFirstSegment) {
-    return `${segments[0]}/…/${tail}`;
-  }
-
-  return `…/${tail}`;
+  return collapseSegments(segments, keptIndices);
 }
 
 function collapseAroundMatches(
   segments: readonly string[],
   matchedIndices: readonly number[],
-  keepFirstSegment: boolean,
+  alwaysKeptIndices: readonly number[],
   contextRadius: number,
   tailSegmentCount: number,
 ): string {
-  const keptIndices = new Set<number>();
-
-  if (keepFirstSegment) {
-    keptIndices.add(0);
-  }
+  const keptIndices = new Set(alwaysKeptIndices);
 
   for (const matchedIndex of matchedIndices) {
     for (
@@ -219,6 +158,31 @@ function collapseAroundMatches(
   }
 
   return collapseSegments(segments, keptIndices);
+}
+
+function collectAlwaysKeptIndices(
+  segments: readonly string[],
+  workspaceFolderName: string | undefined,
+  packageRoot: string | undefined,
+): number[] {
+  const keptIndices = new Set<number>();
+
+  if (workspaceFolderName) {
+    keptIndices.add(0);
+  }
+
+  const packageRootSegments = packageRoot === undefined ? [] : splitSegments(packageRoot);
+
+  if (packageRootSegments.length) {
+    const packageDirectoryIndex =
+      Number(Boolean(workspaceFolderName)) + packageRootSegments.length - 1;
+
+    if (packageDirectoryIndex < segments.length) {
+      keptIndices.add(packageDirectoryIndex);
+    }
+  }
+
+  return [...keptIndices];
 }
 
 function collapseSegments(segments: readonly string[], keptIndices: ReadonlySet<number>): string {
@@ -243,10 +207,10 @@ function collapseSegments(segments: readonly string[], keptIndices: ReadonlySet<
   return collapsed.join("/");
 }
 
-function getAvailableDescriptionWidth(basename: string): number {
+function getAvailableDescriptionWidth(basename: string, config: PickerDescriptionConfig): number {
   return Math.max(
-    MIN_DESCRIPTION_WIDTH_UNITS,
-    MAX_ROW_WIDTH_UNITS - estimateTextWidth(basename) - LABEL_PADDING_WIDTH_UNITS,
+    config.minDescriptionWidthUnits,
+    config.maxRowWidthUnits - estimateTextWidth(basename) - config.labelPaddingWidthUnits,
   );
 }
 
@@ -294,23 +258,4 @@ function appendStatusTag(value: string | undefined, tag: string | undefined): st
   }
 
   return `${value} ${tag}`;
-}
-
-function shouldIncludeEntry(
-  entry: FileEntry,
-  query: string,
-  rankingContext: FileSearchRankingContext,
-  gitignoredVisibility: GitignoredVisibility,
-): boolean {
-  const gitTrackingState = rankingContext.getGitTrackingState?.(entry) ?? "unknown";
-
-  if (gitTrackingState !== "ignored") {
-    return true;
-  }
-
-  return shouldIncludeGitignoredFile(query, gitignoredVisibility);
-}
-
-function formatScoreDetail(score: number): string {
-  return `score ${Math.round(score).toLocaleString("en-US")}`;
 }

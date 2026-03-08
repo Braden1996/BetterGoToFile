@@ -1,0 +1,10 @@
+{
+  "targets": ["claudecode", "codexcli"],
+  "features": ["rules", "skills"],
+  "baseDirs": ["."],
+  "delete": true,
+  "verbose": false,
+  "silent": false,
+  "global": false,
+  "simulateSkills": false,
+}

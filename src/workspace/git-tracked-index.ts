@@ -1,12 +1,9 @@
-import { execFile } from "node:child_process";
 import * as path from "node:path";
-import { promisify } from "node:util";
 import * as vscode from "vscode";
-import { normalizePath } from "./file-entry";
-
-const execFileAsync = promisify(execFile);
-
-export type GitTrackingState = "tracked" | "untracked" | "ignored" | "unknown";
+import type { GitConfig } from "../config/schema";
+import type { GitTrackingState } from "./git-tracking-state";
+import { loadTrackedPaths, normalizeFsPath, resolveRepoRoot, runGit } from "./git-utils";
+import { normalizePath } from "./workspace-path";
 
 interface WorkspaceGitState {
   readonly repoRootPath?: string;
@@ -16,12 +13,20 @@ interface WorkspaceGitState {
 }
 
 export class GitTrackedIndex implements vscode.Disposable {
+  private readonly emitter = new vscode.EventEmitter<void>();
   private readonly states = new Map<string, WorkspaceGitState>();
   private readonly disposables: vscode.Disposable[] = [];
+  private config: GitConfig;
   private refreshPromise = Promise.resolve();
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
 
-  constructor(private readonly log?: (message: string) => void) {
+  readonly onDidChange = this.emitter.event;
+
+  constructor(
+    config: GitConfig,
+    private readonly log?: (message: string) => void,
+  ) {
+    this.config = config;
     this.scheduleRefresh();
 
     const headWatcher = vscode.workspace.createFileSystemWatcher("**/.git/HEAD");
@@ -43,6 +48,10 @@ export class GitTrackedIndex implements vscode.Disposable {
         this.scheduleRefresh();
       }),
     );
+  }
+
+  async ready(): Promise<void> {
+    await this.refreshPromise;
   }
 
   getTrackingState(uri: vscode.Uri): GitTrackingState {
@@ -88,6 +97,10 @@ export class GitTrackedIndex implements vscode.Disposable {
     return "untracked";
   }
 
+  updateConfig(config: GitConfig): void {
+    this.config = config;
+  }
+
   dispose(): void {
     if (this.refreshTimer) {
       clearTimeout(this.refreshTimer);
@@ -97,6 +110,8 @@ export class GitTrackedIndex implements vscode.Disposable {
     for (const disposable of this.disposables) {
       disposable.dispose();
     }
+
+    this.emitter.dispose();
   }
 
   private debounceRefresh(): void {
@@ -107,7 +122,7 @@ export class GitTrackedIndex implements vscode.Disposable {
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = undefined;
       this.scheduleRefresh();
-    }, 500);
+    }, this.config.refreshDebounceMs);
   }
 
   private scheduleRefresh(): void {
@@ -130,6 +145,8 @@ export class GitTrackedIndex implements vscode.Disposable {
     for (const [folderPath, state] of nextStates.entries()) {
       this.states.set(folderPath, state);
     }
+
+    this.emitter.fire();
   }
 }
 
@@ -142,9 +159,7 @@ async function loadWorkspaceGitState(
   }
 
   try {
-    const repoRootPath = normalizeFsPath(
-      (await runGit(folder.uri.fsPath, ["rev-parse", "--show-toplevel"])).trim(),
-    );
+    const repoRootPath = await resolveRepoRoot(folder.uri.fsPath);
     const trackedPaths = await loadTrackedPaths(repoRootPath);
     const { ignoredPaths, ignoredDirectoryPrefixes } = await loadIgnoredPaths(repoRootPath);
 
@@ -159,21 +174,6 @@ async function loadWorkspaceGitState(
   } catch {
     return {};
   }
-}
-
-async function loadTrackedPaths(repoRootPath: string): Promise<ReadonlySet<string>> {
-  const stdout = await runGit(repoRootPath, ["ls-files", "-z", "--cached"]);
-  const trackedPaths = new Set<string>();
-
-  for (const entry of stdout.split("\u0000")) {
-    if (!entry) {
-      continue;
-    }
-
-    trackedPaths.add(normalizePath(entry));
-  }
-
-  return trackedPaths;
 }
 
 async function loadIgnoredPaths(
@@ -210,18 +210,4 @@ async function loadIgnoredPaths(
     ignoredPaths,
     ignoredDirectoryPrefixes,
   };
-}
-
-async function runGit(cwd: string, args: readonly string[]): Promise<string> {
-  const { stdout } = await execFileAsync("git", args, {
-    cwd,
-    encoding: "utf8",
-    maxBuffer: 64 * 1024 * 1024,
-  });
-
-  return stdout;
-}
-
-function normalizeFsPath(value: string): string {
-  return normalizePath(path.resolve(value));
 }

@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { isSpecificQuery, shouldIncludeGitignoredFile } from "../src/gitignored-visibility";
+import { DEFAULT_BETTER_GO_TO_FILE_CONFIG } from "../src/config/schema";
+import { isSpecificQuery, shouldIncludeGitignoredFile } from "../src/search/gitignored-visibility";
 import {
   rankSearchCandidates,
   scoreSearchCandidates,
   type SearchCandidate,
-} from "../src/search-ranking";
+} from "../src/search/search-ranking";
 
 function createCandidate(relativePath: string): SearchCandidate {
   const segments = relativePath.split("/");
@@ -94,6 +95,25 @@ describe("rankSearchCandidates", () => {
     expect(ranked[0]?.candidate.relativePath).toBe("src/tracked/config.ts");
     expect(ranked[0]?.total).toBeGreaterThan(ranked[1]?.total ?? 0);
   });
+
+  test("uses configured ranking weights", () => {
+    const candidates = [
+      createCandidate("src/features/history-index.ts"),
+      createCandidate("src/history/index.ts"),
+    ];
+
+    const ranked = rankSearchCandidates(candidates, "history", {}, 200, {
+      ...DEFAULT_BETTER_GO_TO_FILE_CONFIG.ranking,
+      lexical: {
+        ...DEFAULT_BETTER_GO_TO_FILE_CONFIG.ranking.lexical,
+        pathBoundaryScore: 6000,
+        basenamePrefixScore: 1000,
+        basenameSubstringScore: 500,
+      },
+    });
+
+    expect(ranked[0]?.relativePath).toBe("src/history/index.ts");
+  });
 });
 
 describe("gitignored visibility", () => {
@@ -114,5 +134,25 @@ describe("gitignored visibility", () => {
   test("show and hide modes are explicit", () => {
     expect(shouldIncludeGitignoredFile("", "show")).toBe(true);
     expect(shouldIncludeGitignoredFile("config", "hide")).toBe(false);
+  });
+
+  test("specific query thresholds are configurable", () => {
+    expect(
+      isSpecificQuery("abcd", {
+        minQueryLength: 6,
+        minTokenCount: 3,
+        revealOnPathSeparator: false,
+      }),
+    ).toBe(false);
+    expect(
+      shouldIncludeGitignoredFile("foo bar baz", {
+        visibility: "auto",
+        auto: {
+          minQueryLength: 6,
+          minTokenCount: 3,
+          revealOnPathSeparator: false,
+        },
+      }),
+    ).toBe(true);
   });
 });
