@@ -1,0 +1,13 @@
+{
+  "$schema": "./node_modules/knip/schema-jsonc.json",
+
+  // The extension is loaded from package.json, so declare its source entrypoint explicitly.
+  // Tests are roots too; otherwise test-only helpers and modules look unused.
+  "entry": ["src/extension.ts", "test/**/*.test.ts"],
+
+  // Keep analysis scoped to authored TypeScript sources in this single-package repo.
+  "project": ["src/**/*.ts", "test/**/*.ts"],
+
+  // This file exists only to satisfy the test tsconfig's ambient Bun typings.
+  "ignore": ["test/bun-test-env.d.ts"],
+}

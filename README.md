@@ -28,4 +28,5 @@ Run `bun test`.
 - `bun run fmt`
 - `bun run fmt:check`
 - `bun run lint`
+- `bun run knip`
 - `bun run check`

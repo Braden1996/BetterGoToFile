@@ -7,9 +7,9 @@ import {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-export const BETTER_GO_TO_FILE_CONFIGURATION_SECTION = "betterGoToFile";
+const BETTER_GO_TO_FILE_CONFIGURATION_SECTION = "betterGoToFile";
 
-export interface BetterGoToFileConfigChange {
+interface BetterGoToFileConfigChange {
   readonly previous: BetterGoToFileConfig;
   readonly current: BetterGoToFileConfig;
 }
@@ -45,7 +45,7 @@ export class BetterGoToFileConfigStore implements vscode.Disposable {
   }
 }
 
-export function readBetterGoToFileConfig(): BetterGoToFileConfig {
+function readBetterGoToFileConfig(): BetterGoToFileConfig {
   const configuration = vscode.workspace.getConfiguration(BETTER_GO_TO_FILE_CONFIGURATION_SECTION);
   const defaults = DEFAULT_BETTER_GO_TO_FILE_CONFIG;
 

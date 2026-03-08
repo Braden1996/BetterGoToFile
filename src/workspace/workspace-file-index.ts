@@ -39,6 +39,10 @@ export class WorkspaceFileIndex implements vscode.Disposable {
     return this.sortedEntries;
   }
 
+  getEntry(relativePath: string): FileEntry | undefined {
+    return this.entriesByPath.get(relativePath);
+  }
+
   updateConfig(config: WorkspaceIndexConfig): void {
     const shouldRecreateWatcher = config.fileGlob !== this.config.fileGlob;
 

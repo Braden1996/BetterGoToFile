@@ -9,7 +9,7 @@ export interface FilePickItem extends vscode.QuickPickItem {
   readonly entry?: FileEntry;
 }
 
-export type ResolveFileIcon = (entry: FileEntry) => vscode.IconPath | undefined;
+type ResolveFileIcon = (entry: FileEntry) => vscode.IconPath | undefined;
 export type FileSearchRankingContext = SearchContext<FileEntry>;
 
 export function toQuickPickItems(
@@ -57,6 +57,7 @@ export function toQuickPickItems(
         config.picker.description,
       ),
       detail: config.picker.showScores ? formatScoreDetail(total) : undefined,
+      alwaysShow: true,
       iconPath: iconPath ?? vscode.ThemeIcon.File,
       resourceUri: iconPath ? undefined : entry.uri,
       entry,

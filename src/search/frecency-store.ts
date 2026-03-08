@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import * as path from "node:path";
 
-export interface FrecencyRecord {
+interface FrecencyRecord {
   readonly score: number;
   readonly referenceTime: number;
   readonly lastAccessed: number;
@@ -14,13 +14,13 @@ interface FrecencySnapshot {
   readonly records: Record<string, FrecencyRecord>;
 }
 
-export interface FrecencyStoreOptions {
+interface FrecencyStoreOptions {
   readonly halfLifeMs?: number;
   readonly flushDelayMs?: number;
   readonly maxRecords?: number;
 }
 
-export interface RecordOpenOptions {
+interface RecordOpenOptions {
   readonly now?: number;
   readonly weight?: number;
 }

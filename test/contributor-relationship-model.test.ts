@@ -1,23 +1,40 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildContributorSearchProfile,
   buildContributorRelationshipGraph,
   createContributorIdentity,
   rankContributorRelationships,
+  scoreContributorFile,
   type ContributorTouch,
+  type ContributorTouchedFile,
 } from "../src/workspace/contributor-relationship-model";
 
+const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW_MS = Date.UTC(2026, 2, 8);
 
-function createTouch(
-  name: string,
-  email: string,
-  ageDays: number,
-  touchedPaths: readonly string[],
-): ContributorTouch {
+interface TouchOptions {
+  readonly ageDays: number;
+  readonly email: string;
+  readonly files?: readonly ContributorTouchedFile[];
+  readonly message?: string;
+  readonly name: string;
+  readonly touchedPaths?: readonly string[];
+}
+
+function createTouch({
+  ageDays,
+  email,
+  files,
+  message,
+  name,
+  touchedPaths,
+}: TouchOptions): ContributorTouch {
   return {
     contributor: createContributorIdentity(name, email),
-    committedAtMs: NOW_MS - ageDays * 24 * 60 * 60 * 1000,
-    touchedPaths,
+    committedAtMs: NOW_MS - ageDays * DAY_MS,
+    files,
+    message,
+    touchedPaths: touchedPaths ?? files?.map((file) => file.path) ?? [],
   };
 }
 
@@ -25,9 +42,24 @@ describe("buildContributorRelationshipGraph", () => {
   test("merges self aliases into one contributor profile", () => {
     const graph = buildContributorRelationshipGraph(
       [
-        createTouch("Braden Marshall", "braden1996@hotmail.co.uk", 3, ["src/app.ts"]),
-        createTouch("Braden Marshall", "braden@attio.com", 2, ["src/search.ts"]),
-        createTouch("Alex", "alex@attio.com", 2, ["src/search.ts"]),
+        createTouch({
+          ageDays: 3,
+          email: "braden1996@hotmail.co.uk",
+          name: "Braden Marshall",
+          touchedPaths: ["src/app.ts"],
+        }),
+        createTouch({
+          ageDays: 2,
+          email: "braden@attio.com",
+          name: "Braden Marshall",
+          touchedPaths: ["src/search.ts"],
+        }),
+        createTouch({
+          ageDays: 2,
+          email: "alex@attio.com",
+          name: "Alex",
+          touchedPaths: ["src/search.ts"],
+        }),
       ],
       {
         currentContributor: {
@@ -38,15 +70,16 @@ describe("buildContributorRelationshipGraph", () => {
       },
     );
 
+    const currentSummary = graph.contributors.find(
+      (summary) => summary.contributor.key === graph.currentContributorKey,
+    );
+
     expect(graph.currentContributorKey).toBe("email:braden1996@hotmail.co.uk");
     expect(graph.contributors.map((summary) => summary.contributor.key)).toEqual([
       "email:braden1996@hotmail.co.uk",
       "email:alex@attio.com",
     ]);
-    expect(
-      graph.contributors.find((summary) => summary.contributor.key === graph.currentContributorKey)
-        ?.touchedCommitCount,
-    ).toBe(2);
+    expect(currentSummary?.touchedCommitCount).toBe(2);
     expect(graph.contributorFiles.get("email:braden1996@hotmail.co.uk")).toEqual(
       new Set(["src/app.ts", "src/search.ts"]),
     );
@@ -55,8 +88,18 @@ describe("buildContributorRelationshipGraph", () => {
   test("filters touched paths to tracked files before counting commits", () => {
     const graph = buildContributorRelationshipGraph(
       [
-        createTouch("Braden", "braden@example.com", 1, ["src/app.ts", "deleted.ts"]),
-        createTouch("Alex", "alex@example.com", 1, ["src/app.ts", "README.md"]),
+        createTouch({
+          ageDays: 1,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["src/app.ts", "deleted.ts"],
+        }),
+        createTouch({
+          ageDays: 1,
+          email: "alex@example.com",
+          name: "Alex",
+          touchedPaths: ["src/app.ts", "README.md"],
+        }),
       ],
       {
         currentContributor: {
@@ -69,62 +112,97 @@ describe("buildContributorRelationshipGraph", () => {
     );
 
     expect(
-      graph.contributors.map((summary) => [
-        summary.contributor.key,
-        summary.touchedFileCount,
-        summary.touchedCommitCount,
+      new Map(
+        graph.contributors.map((summary) => [
+          summary.contributor.key,
+          [summary.touchedFileCount, summary.touchedCommitCount],
+        ]),
+      ),
+    ).toEqual(
+      new Map([
+        ["email:alex@example.com", [2, 1]],
+        ["email:braden@example.com", [1, 1]],
       ]),
-    ).toEqual([
-      ["email:alex@example.com", 2, 1],
-      ["email:braden@example.com", 1, 1],
+    );
+  });
+
+  test("merges contributor aliases that share a name and prefers non-noreply email", () => {
+    const graph = buildContributorRelationshipGraph(
+      [
+        createTouch({
+          ageDays: 2,
+          email: "3684577+theadamborek@users.noreply.github.com",
+          name: "Adam Borek",
+          touchedPaths: ["src/one.ts"],
+        }),
+        createTouch({
+          ageDays: 4,
+          email: "adam@attio.com",
+          name: "Adam Borek",
+          touchedPaths: ["src/two.ts"],
+        }),
+        createTouch({
+          ageDays: 1,
+          email: "alex@example.com",
+          name: "Alex",
+          touchedPaths: ["src/two.ts"],
+        }),
+      ],
+      {
+        nowMs: NOW_MS,
+      },
+    );
+
+    const adamSummary = graph.contributors.find(
+      (summary) => summary.contributor.key === "email:adam@attio.com",
+    );
+
+    expect(graph.contributors.map((summary) => summary.contributor.key)).toEqual([
+      "email:adam@attio.com",
+      "email:alex@example.com",
     ]);
+    expect(adamSummary?.touchedCommitCount).toBe(2);
+    expect(adamSummary?.touchedFileCount).toBe(2);
+    expect(adamSummary?.contributor.email).toBe("adam@attio.com");
   });
 });
 
 describe("rankContributorRelationships", () => {
-  test("prefers repeated focused overlap over a one-off broad sweep", () => {
-    const graph = buildContributorRelationshipGraph(
-      [
-        createTouch("Braden", "braden@example.com", 2, ["src/a.ts", "src/b.ts"]),
-        createTouch("Braden", "braden@example.com", 4, ["src/a.ts"]),
-        createTouch("Focused", "focused@example.com", 1, ["src/a.ts"]),
-        createTouch("Focused", "focused@example.com", 3, ["src/a.ts", "src/b.ts"]),
-        createTouch("Sweep", "sweep@example.com", 1, [
-          "src/a.ts",
-          "src/b.ts",
-          ...Array.from({ length: 40 }, (_, index) => `src/generated-${index}.ts`),
-        ]),
-      ],
-      {
-        currentContributor: {
-          name: "Braden",
-          email: "braden@example.com",
-        },
-        nowMs: NOW_MS,
-      },
-    );
-    const relationships = rankContributorRelationships(graph, "email:braden@example.com", {
-      limit: 2,
-      sampleSize: 2,
-    });
-
-    expect(relationships.map((relationship) => relationship.contributor.key)).toEqual([
-      "email:focused@example.com",
-      "email:sweep@example.com",
+  test("derives similarity from shared package-local area prefixes", () => {
+    const trackedPaths = new Set([
+      "packages/app/package.json",
+      "packages/app/src/search/index.ts",
+      "packages/app/src/search/rank.ts",
+      "packages/app/src/search/cache.ts",
+      "packages/ui/package.json",
+      "packages/ui/src/button.ts",
     ]);
-    expect(relationships[0]?.relationshipScore).toBeGreaterThan(
-      relationships[1]?.relationshipScore ?? 0,
-    );
-    expect(relationships[0]?.precision).toBeGreaterThan(relationships[1]?.precision ?? 0);
-  });
-
-  test("matches nearby files via directory ownership ripple", () => {
     const graph = buildContributorRelationshipGraph(
       [
-        createTouch("Braden", "braden@example.com", 2, ["src/search/rank.ts"]),
-        createTouch("Braden", "braden@example.com", 4, ["src/search/index.ts"]),
-        createTouch("Search", "search@example.com", 3, ["src/search/cache.ts"]),
-        createTouch("UI", "ui@example.com", 3, ["src/ui/button.ts"]),
+        createTouch({
+          ageDays: 2,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/search/rank.ts"],
+        }),
+        createTouch({
+          ageDays: 4,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/search/index.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "search@example.com",
+          name: "Search",
+          touchedPaths: ["packages/app/src/search/cache.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "ui@example.com",
+          name: "UI",
+          touchedPaths: ["packages/ui/src/button.ts"],
+        }),
       ],
       {
         currentContributor: {
@@ -132,35 +210,61 @@ describe("rankContributorRelationships", () => {
           email: "braden@example.com",
         },
         nowMs: NOW_MS,
+        trackedPaths,
       },
     );
     const relationships = rankContributorRelationships(graph, "email:braden@example.com", {
-      limit: 2,
+      limit: 3,
       sampleSize: 3,
     });
 
     expect(relationships.map((relationship) => relationship.contributor.key)).toEqual([
       "email:search@example.com",
-      "email:ui@example.com",
     ]);
-    expect(relationships[0]?.sharedFileCount).toBe(0);
-    expect(relationships[0]?.sharedNodeCount).toBeGreaterThan(
-      relationships[1]?.sharedNodeCount ?? 0,
-    );
-    expect(relationships[0]?.sampleSharedPaths.includes("src/search/")).toBe(true);
+    expect(relationships[0]?.sampleSharedAreas.includes("packages/app/src/search")).toBe(true);
   });
 
-  test("prefers recent overlap over cooling activity", () => {
+  test("preserves shared areas across renames through file lineage", () => {
+    const trackedPaths = new Set([
+      "packages/app/package.json",
+      "packages/app/src/feature/current.ts",
+    ]);
     const graph = buildContributorRelationshipGraph(
       [
-        createTouch("Braden", "braden@example.com", 2, ["src/core.ts"]),
-        createTouch("Braden", "braden@example.com", 6, ["src/core.ts"]),
-        createTouch("Recent", "recent@example.com", 3, ["src/core.ts"]),
-        createTouch("Recent", "recent@example.com", 5, ["src/core.ts"]),
-        createTouch("Cooling", "cooling@example.com", 80, ["src/core.ts"]),
-        createTouch("Cooling", "cooling@example.com", 90, ["src/core.ts"]),
-        createTouch("Cooling", "cooling@example.com", 100, ["src/core.ts"]),
-        createTouch("Cooling", "cooling@example.com", 110, ["src/core.ts"]),
+        createTouch({
+          ageDays: 1,
+          email: "braden@example.com",
+          files: [
+            {
+              path: "packages/app/src/feature/current.ts",
+              previousPath: "packages/app/src/legacy/current.ts",
+              status: "R100",
+            },
+          ],
+          name: "Braden",
+        }),
+        createTouch({
+          ageDays: 4,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/feature/current.ts"],
+        }),
+        createTouch({
+          ageDays: 25,
+          email: "teammate@example.com",
+          files: [
+            {
+              path: "packages/app/src/legacy/current.ts",
+            },
+          ],
+          name: "Teammate",
+        }),
+        createTouch({
+          ageDays: 2,
+          email: "other@example.com",
+          name: "Other",
+          touchedPaths: ["packages/app/src/legacy/other.ts"],
+        }),
       ],
       {
         currentContributor: {
@@ -168,31 +272,69 @@ describe("rankContributorRelationships", () => {
           email: "braden@example.com",
         },
         nowMs: NOW_MS,
+        trackedPaths,
       },
     );
     const relationships = rankContributorRelationships(graph, "email:braden@example.com", {
-      limit: 2,
-      sampleSize: 1,
+      limit: 3,
+      sampleSize: 3,
     });
 
-    expect(relationships.map((relationship) => relationship.contributor.key)).toEqual([
-      "email:recent@example.com",
-      "email:cooling@example.com",
-    ]);
-    expect(relationships[0]?.recentOverlapWeight).toBeGreaterThan(
-      relationships[1]?.recentOverlapWeight ?? 0,
-    );
-    expect(relationships[0]?.activityFactor).toBeGreaterThan(relationships[1]?.activityFactor ?? 0);
+    expect(relationships[0]?.contributor.key).toBe("email:teammate@example.com");
+    expect(relationships[0]?.sampleSharedAreas.includes("packages/app/src/feature")).toBe(true);
   });
 
-  test("uses freshness rather than recent commit volume for activity", () => {
+  test("does not infer similarity only from generic ancestors above package roots", () => {
+    const trackedPaths = new Set([
+      "packages/runtimes/mobile-a/package.json",
+      "packages/runtimes/mobile-a/src/current.ts",
+      "packages/runtimes/mobile-a/src/peer.ts",
+      "packages/runtimes/mobile-a/src/local.ts",
+      "packages/runtimes/mobile-b/package.json",
+      "packages/runtimes/mobile-b/src/index.ts",
+      "packages/runtimes/mobile-c/package.json",
+      "packages/runtimes/mobile-c/src/index.ts",
+      "packages/runtimes/mobile-d/package.json",
+      "packages/runtimes/mobile-d/src/index.ts",
+    ]);
     const graph = buildContributorRelationshipGraph(
       [
-        createTouch("Braden", "braden@example.com", 2, ["src/core.ts"]),
-        createTouch("Quiet", "quiet@example.com", 3, ["src/core.ts"]),
-        createTouch("Busy", "busy@example.com", 3, ["src/core.ts"]),
-        createTouch("Busy", "busy@example.com", 6, ["src/core.ts"]),
-        createTouch("Busy", "busy@example.com", 9, ["src/core.ts"]),
+        createTouch({
+          ageDays: 2,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/runtimes/mobile-a/src/current.ts"],
+        }),
+        createTouch({
+          ageDays: 5,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/runtimes/mobile-a/src/local.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "teammate@example.com",
+          name: "Teammate",
+          touchedPaths: ["packages/runtimes/mobile-a/src/peer.ts"],
+        }),
+        createTouch({
+          ageDays: 1,
+          email: "generic@example.com",
+          name: "Generic",
+          touchedPaths: ["packages/runtimes/mobile-b/src/index.ts"],
+        }),
+        createTouch({
+          ageDays: 4,
+          email: "generic@example.com",
+          name: "Generic",
+          touchedPaths: ["packages/runtimes/mobile-c/src/index.ts"],
+        }),
+        createTouch({
+          ageDays: 7,
+          email: "generic@example.com",
+          name: "Generic",
+          touchedPaths: ["packages/runtimes/mobile-d/src/index.ts"],
+        }),
       ],
       {
         currentContributor: {
@@ -200,6 +342,61 @@ describe("rankContributorRelationships", () => {
           email: "braden@example.com",
         },
         nowMs: NOW_MS,
+        trackedPaths,
+      },
+    );
+    const relationships = rankContributorRelationships(graph, "email:braden@example.com", {
+      limit: 3,
+      sampleSize: 2,
+    });
+
+    expect(relationships.map((relationship) => relationship.contributor.key)).toEqual([
+      "email:teammate@example.com",
+    ]);
+  });
+
+  test("treats quiet active teammates the same as busy active teammates", () => {
+    const trackedPaths = new Set(["packages/app/package.json", "packages/app/src/core.ts"]);
+    const graph = buildContributorRelationshipGraph(
+      [
+        createTouch({
+          ageDays: 2,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "quiet@example.com",
+          name: "Quiet",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "busy@example.com",
+          name: "Busy",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 6,
+          email: "busy@example.com",
+          name: "Busy",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 9,
+          email: "busy@example.com",
+          name: "Busy",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+      ],
+      {
+        currentContributor: {
+          name: "Braden",
+          email: "braden@example.com",
+        },
+        nowMs: NOW_MS,
+        trackedPaths,
       },
     );
     const relationships = rankContributorRelationships(graph, "email:braden@example.com", {
@@ -213,21 +410,56 @@ describe("rankContributorRelationships", () => {
       (relationship) => relationship.contributor.key === "email:busy@example.com",
     );
 
+    expect(quietRelationship !== undefined).toBe(true);
+    expect(busyRelationship !== undefined).toBe(true);
     expect(quietRelationship?.activityFactor).toBe(1);
     expect(busyRelationship?.activityFactor).toBe(1);
+    expect(quietRelationship?.relationshipScore ?? 0).toBeCloseTo(
+      busyRelationship?.relationshipScore ?? 0,
+      6,
+    );
   });
 
   test("excludes contributors with no recent activity", () => {
+    const trackedPaths = new Set(["packages/app/package.json", "packages/app/src/core.ts"]);
     const graph = buildContributorRelationshipGraph(
       [
-        createTouch("Braden", "braden@example.com", 2, ["src/core.ts"]),
-        createTouch("Braden", "braden@example.com", 6, ["src/core.ts"]),
-        createTouch("Recent", "recent@example.com", 3, ["src/core.ts"]),
-        createTouch("Recent", "recent@example.com", 5, ["src/core.ts"]),
-        createTouch("Former", "former@example.com", 160, ["src/core.ts"]),
-        createTouch("Former", "former@example.com", 170, ["src/core.ts"]),
-        createTouch("Former", "former@example.com", 180, ["src/core.ts"]),
-        createTouch("Former", "former@example.com", 190, ["src/core.ts"]),
+        createTouch({
+          ageDays: 2,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 6,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "recent@example.com",
+          name: "Recent",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 5,
+          email: "recent@example.com",
+          name: "Recent",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 160,
+          email: "former@example.com",
+          name: "Former",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 170,
+          email: "former@example.com",
+          name: "Former",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
       ],
       {
         currentContributor: {
@@ -235,6 +467,7 @@ describe("rankContributorRelationships", () => {
           email: "braden@example.com",
         },
         nowMs: NOW_MS,
+        trackedPaths,
       },
     );
     const relationships = rankContributorRelationships(graph, "email:braden@example.com", {
@@ -247,7 +480,7 @@ describe("rankContributorRelationships", () => {
     ]);
   });
 
-  test("penalizes cross-cutting setup work across package roots", () => {
+  test("penalizes broad mechanical setup work against focused package overlap", () => {
     const trackedPaths = new Set([
       "package.json",
       "yarn.lock",
@@ -265,28 +498,66 @@ describe("rankContributorRelationships", () => {
     ]);
     const graph = buildContributorRelationshipGraph(
       [
-        createTouch("Braden", "braden@example.com", 2, ["packages/app/src/feature.ts"]),
-        createTouch("Braden", "braden@example.com", 4, ["packages/app/src/model.ts"]),
-        createTouch("Quiet", "quiet@example.com", 3, ["packages/app/src/feature.ts"]),
-        createTouch("Quiet", "quiet@example.com", 7, ["packages/app/src/model.ts"]),
-        createTouch("ESM", "esm@example.com", 1, [
-          "package.json",
-          "yarn.lock",
-          "packages/app/package.json",
-          "packages/web/package.json",
-          "packages/design/package.json",
-        ]),
-        createTouch("ESM", "esm@example.com", 2, [
-          "packages/app/src/feature.ts",
-          "packages/app/tsconfig.json",
-          "packages/web/tsconfig.json",
-          "packages/design/tsconfig.json",
-        ]),
-        createTouch("ESM", "esm@example.com", 5, [
-          "packages/app/src/setup.ts",
-          "packages/web/src/index.ts",
-          "packages/design/src/theme.ts",
-        ]),
+        createTouch({
+          ageDays: 2,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/feature.ts"],
+        }),
+        createTouch({
+          ageDays: 4,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/model.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "quiet@example.com",
+          name: "Quiet",
+          touchedPaths: ["packages/app/src/feature.ts"],
+        }),
+        createTouch({
+          ageDays: 7,
+          email: "quiet@example.com",
+          name: "Quiet",
+          touchedPaths: ["packages/app/src/model.ts"],
+        }),
+        createTouch({
+          ageDays: 1,
+          email: "esm@example.com",
+          message: "chore: esm codemod",
+          name: "ESM",
+          touchedPaths: [
+            "package.json",
+            "yarn.lock",
+            "packages/app/package.json",
+            "packages/web/package.json",
+            "packages/design/package.json",
+          ],
+        }),
+        createTouch({
+          ageDays: 2,
+          email: "esm@example.com",
+          message: "chore: format tsconfig for esm",
+          name: "ESM",
+          touchedPaths: [
+            "packages/app/src/feature.ts",
+            "packages/app/tsconfig.json",
+            "packages/web/tsconfig.json",
+            "packages/design/tsconfig.json",
+          ],
+        }),
+        createTouch({
+          ageDays: 5,
+          email: "esm@example.com",
+          message: "chore: esm entrypoint migration",
+          name: "ESM",
+          touchedPaths: [
+            "packages/app/src/setup.ts",
+            "packages/web/src/index.ts",
+            "packages/design/src/theme.ts",
+          ],
+        }),
       ],
       {
         currentContributor: {
@@ -310,25 +581,30 @@ describe("rankContributorRelationships", () => {
 
     expect(quietRelationship !== undefined).toBe(true);
     expect(esmRelationship !== undefined).toBe(true);
-    expect(quietRelationship?.relationshipScore).toBeGreaterThan(
+    expect(quietRelationship?.relationshipScore ?? 0).toBeGreaterThan(
       esmRelationship?.relationshipScore ?? 0,
     );
-    expect(quietRelationship?.activityFactor).toBe(1);
-    expect(esmRelationship?.activityFactor).toBe(1);
+    expect(quietRelationship?.broadnessPenalty ?? 0).toBeGreaterThan(
+      esmRelationship?.broadnessPenalty ?? 0,
+    );
   });
 
-  test("downweights common files compared with specific overlap", () => {
+  test("filters bot contributors from the relationship graph", () => {
+    const trackedPaths = new Set(["packages/app/package.json", "packages/app/src/core.ts"]);
     const graph = buildContributorRelationshipGraph(
       [
-        createTouch("Braden", "braden@example.com", 2, ["package.json", "src/feature.ts"]),
-        createTouch("Braden", "braden@example.com", 4, ["src/feature.ts"]),
-        createTouch("Specific", "specific@example.com", 3, ["src/feature.ts"]),
-        createTouch("Specific", "specific@example.com", 5, ["src/feature.ts"]),
-        createTouch("Bot", "bot@example.com", 1, ["package.json"]),
-        createTouch("Bot", "bot@example.com", 2, ["package.json"]),
-        createTouch("Alex", "alex@example.com", 1, ["package.json"]),
-        createTouch("Jamie", "jamie@example.com", 1, ["package.json"]),
-        createTouch("Taylor", "taylor@example.com", 1, ["package.json"]),
+        createTouch({
+          ageDays: 2,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
+        createTouch({
+          ageDays: 1,
+          email: "49699333+dependabot[bot]@users.noreply.github.com",
+          name: "dependabot[bot]",
+          touchedPaths: ["packages/app/src/core.ts"],
+        }),
       ],
       {
         currentContributor: {
@@ -336,15 +612,106 @@ describe("rankContributorRelationships", () => {
           email: "braden@example.com",
         },
         nowMs: NOW_MS,
+        trackedPaths,
       },
     );
     const relationships = rankContributorRelationships(graph, "email:braden@example.com", {
-      limit: 2,
-      sampleSize: 2,
+      limit: 3,
     });
 
-    expect(relationships[0]?.contributor.key).toBe("email:specific@example.com");
-    expect(relationships[0]?.overlapWeight).toBeGreaterThan(relationships[1]?.overlapWeight ?? 0);
-    expect(relationships[1]?.sharedFileCount).toBe(1);
+    expect(relationships).toEqual([]);
+    expect(graph.contributors.map((summary) => summary.contributor.key)).toEqual([
+      "email:braden@example.com",
+    ]);
+  });
+});
+
+describe("buildContributorSearchProfile", () => {
+  test("scores files from self, teammate lineage, and shared area priors", () => {
+    const trackedPaths = new Set([
+      "packages/app/package.json",
+      "packages/app/src/feature/current.ts",
+      "packages/app/src/feature/sibling.ts",
+      "packages/ui/package.json",
+      "packages/ui/src/button.ts",
+    ]);
+    const graph = buildContributorRelationshipGraph(
+      [
+        createTouch({
+          ageDays: 1,
+          email: "braden@example.com",
+          files: [
+            {
+              path: "packages/app/src/feature/current.ts",
+              previousPath: "packages/app/src/legacy/current.ts",
+              status: "R100",
+            },
+          ],
+          name: "Braden",
+        }),
+        createTouch({
+          ageDays: 5,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/feature/sibling.ts"],
+        }),
+        createTouch({
+          ageDays: 9,
+          email: "teammate@example.com",
+          name: "Teammate",
+          touchedPaths: ["packages/app/src/feature/sibling.ts"],
+        }),
+        createTouch({
+          ageDays: 20,
+          email: "teammate@example.com",
+          files: [
+            {
+              path: "packages/app/src/legacy/current.ts",
+            },
+          ],
+          name: "Teammate",
+        }),
+        createTouch({
+          ageDays: 2,
+          email: "ui@example.com",
+          name: "UI",
+          touchedPaths: ["packages/ui/src/button.ts"],
+        }),
+      ],
+      {
+        currentContributor: {
+          name: "Braden",
+          email: "braden@example.com",
+        },
+        nowMs: NOW_MS,
+        trackedPaths,
+      },
+    );
+    const profile = buildContributorSearchProfile(graph, "email:braden@example.com");
+
+    expect(profile).toBeDefined();
+
+    const packageRootDirectories = new Set(["packages/app", "packages/ui"]);
+    const currentFileScore = scoreContributorFile(
+      profile!,
+      "packages/app/src/feature/current.ts",
+      packageRootDirectories,
+    );
+    const siblingFileScore = scoreContributorFile(
+      profile!,
+      "packages/app/src/feature/sibling.ts",
+      packageRootDirectories,
+    );
+    const unrelatedFileScore = scoreContributorFile(
+      profile!,
+      "packages/ui/src/button.ts",
+      packageRootDirectories,
+    );
+
+    expect(currentFileScore.filePrior).toBeGreaterThan(0);
+    expect(currentFileScore.teamPrior).toBeGreaterThan(0);
+    expect(currentFileScore.ownerPrior).toBeGreaterThan(0);
+    expect(siblingFileScore.areaPrior).toBeGreaterThan(0);
+    expect(siblingFileScore.total).toBeGreaterThan(unrelatedFileScore.total);
   });
 });

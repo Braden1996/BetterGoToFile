@@ -9,6 +9,7 @@ export interface FileEntry {
   readonly relativePath: string;
   readonly directory: string;
   readonly packageRoot?: string;
+  readonly workspaceFolderPath?: string;
   readonly workspaceFolderName?: string;
   readonly searchBasename: string;
   readonly searchPath: string;
@@ -33,6 +34,7 @@ export function toFileEntry(
     relativePath,
     directory,
     packageRoot,
+    workspaceFolderPath: workspaceFolder?.uri.fsPath,
     workspaceFolderName: isMultiRoot ? workspaceFolder?.name : undefined,
     searchBasename: basename.toLowerCase(),
     searchPath: relativePath.toLowerCase(),

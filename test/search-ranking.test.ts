@@ -7,7 +7,7 @@ import {
   type SearchCandidate,
 } from "../src/search/search-ranking";
 
-function createCandidate(relativePath: string): SearchCandidate {
+function createCandidate(relativePath: string, packageRoot?: string): SearchCandidate {
   const segments = relativePath.split("/");
   const basename = segments[segments.length - 1];
   const directory = segments.slice(0, -1).join("/");
@@ -16,6 +16,7 @@ function createCandidate(relativePath: string): SearchCandidate {
     basename,
     relativePath,
     directory,
+    packageRoot,
     searchBasename: basename.toLowerCase(),
     searchPath: relativePath.toLowerCase(),
   };
@@ -46,6 +47,52 @@ describe("rankSearchCandidates", () => {
     expect(ranked[0]?.relativePath).toBe("src/app/config.ts");
   });
 
+  test("uses git priors to rerank ambiguous basename matches", () => {
+    const candidates = [
+      createCandidate("packages/ui/src/button.ts"),
+      createCandidate("packages/app/src/button.ts"),
+    ];
+
+    const ranked = rankSearchCandidates(candidates, "button", {
+      getGitPrior: (candidate) => (candidate.relativePath === "packages/app/src/button.ts" ? 8 : 0),
+    });
+
+    expect(ranked[0]?.relativePath).toBe("packages/app/src/button.ts");
+  });
+
+  test("prefers package and basename intent over a single overloaded basename", () => {
+    const candidates = [
+      createCandidate(
+        "packages/libraries/native/mobile-picasso/src/components/Button/button-container.component.tsx",
+        "packages/libraries/native/mobile-picasso",
+      ),
+      createCandidate(
+        "packages/design-system/src/components/mobile-button.component.tsx",
+        "packages/design-system",
+      ),
+    ];
+
+    const ranked = rankSearchCandidates(candidates, "mobile button");
+
+    expect(ranked[0]?.relativePath).toBe(
+      "packages/libraries/native/mobile-picasso/src/components/Button/button-container.component.tsx",
+    );
+  });
+
+  test("does not let git priors bulldoze explicit path intent", () => {
+    const candidates = [
+      createCandidate("packages/web/src/button-view.ts"),
+      createCandidate("packages/view/src/web/button.ts"),
+    ];
+
+    const ranked = rankSearchCandidates(candidates, "web button view", {
+      getGitPrior: (candidate) =>
+        candidate.relativePath === "packages/view/src/web/button.ts" ? 80 : 0,
+    });
+
+    expect(ranked[0]?.relativePath).toBe("packages/web/src/button-view.ts");
+  });
+
   test("boosts files near the active file", () => {
     const candidates = [
       createCandidate("src/search/cache.ts"),
@@ -57,6 +104,27 @@ describe("rankSearchCandidates", () => {
     });
 
     expect(ranked[0]?.relativePath).toBe("src/search/cache.ts");
+  });
+
+  test("boosts files in the active package for ambiguous queries", () => {
+    const candidates = [
+      createCandidate(
+        "packages/libraries/native/mobile-picasso/src/components/Button/index.tsx",
+        "packages/libraries/native/mobile-picasso",
+      ),
+      createCandidate(
+        "packages/libraries/web/web-picasso/src/components/Button/index.tsx",
+        "packages/libraries/web/web-picasso",
+      ),
+    ];
+
+    const ranked = rankSearchCandidates(candidates, "index", {
+      activePackageRoot: "packages/libraries/native/mobile-picasso",
+    });
+
+    expect(ranked[0]?.relativePath).toBe(
+      "packages/libraries/native/mobile-picasso/src/components/Button/index.tsx",
+    );
   });
 
   test("significantly down ranks untracked files", () => {
@@ -124,10 +192,11 @@ describe("gitignored visibility", () => {
   });
 
   test("auto shows ignored files for specific queries", () => {
-    expect(isSpecificQuery("config")).toBe(true);
+    expect(isSpecificQuery("config")).toBe(false);
+    expect(isSpecificQuery("longfilename12")).toBe(true);
     expect(isSpecificQuery(".env.local")).toBe(true);
     expect(isSpecificQuery("foo bar")).toBe(true);
-    expect(shouldIncludeGitignoredFile("config", "auto")).toBe(true);
+    expect(shouldIncludeGitignoredFile("config", "auto")).toBe(false);
     expect(shouldIncludeGitignoredFile(".env.local", "auto")).toBe(true);
   });
 
@@ -136,10 +205,17 @@ describe("gitignored visibility", () => {
     expect(shouldIncludeGitignoredFile("config", "hide")).toBe(false);
   });
 
+  test("underscore and hyphen no longer trigger path separator reveal", () => {
+    expect(isSpecificQuery("btn-view")).toBe(false);
+    expect(isSpecificQuery("my_file")).toBe(false);
+    expect(isSpecificQuery("src/btn")).toBe(true);
+    expect(isSpecificQuery("conf.ts")).toBe(true);
+  });
+
   test("specific query thresholds are configurable", () => {
     expect(
       isSpecificQuery("abcd", {
-        minQueryLength: 6,
+        minQueryLength: 14,
         minTokenCount: 3,
         revealOnPathSeparator: false,
       }),
@@ -148,7 +224,7 @@ describe("gitignored visibility", () => {
       shouldIncludeGitignoredFile("foo bar baz", {
         visibility: "auto",
         auto: {
-          minQueryLength: 6,
+          minQueryLength: 14,
           minTokenCount: 3,
           revealOnPathSeparator: false,
         },

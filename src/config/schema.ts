@@ -121,14 +121,23 @@ export const DEFAULT_BETTER_GO_TO_FILE_CONFIG: BetterGoToFileConfig = {
   gitignored: {
     visibility: "auto",
     auto: {
-      minQueryLength: 5,
+      minQueryLength: 12,
       minTokenCount: 2,
       revealOnPathSeparator: true,
     },
   },
   workspaceIndex: {
     fileGlob: "**/*",
-    excludedDirectories: [".git", "node_modules", "dist", "out", ".next", ".turbo", "coverage"],
+    excludedDirectories: [
+      ".git",
+      "node_modules",
+      "dist",
+      "out",
+      ".next",
+      ".nx",
+      ".turbo",
+      "coverage",
+    ],
     maxFileCount: 50000,
   },
   frecency: {

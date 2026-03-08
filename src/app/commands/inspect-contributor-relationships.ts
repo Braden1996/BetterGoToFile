@@ -97,7 +97,7 @@ function writeSnapshot(
   }
 
   outputChannel.appendLine(
-    `[contributors] current=${formatContributorIdentity(snapshot.currentContributor)} currentFiles=${snapshot.currentContributorFileCount} currentCommits=${snapshot.currentContributorCommitCount} profile=${formatDecimal(snapshot.currentContributorProfileWeight)}`,
+    `[contributors] current=${formatContributorIdentity(snapshot.currentContributor)} currentFiles=${snapshot.currentContributorFileCount} currentCommits=${snapshot.currentContributorCommitCount} areaFast=${formatDecimal(snapshot.currentContributorAreaFastWeight)} areaSlow=${formatDecimal(snapshot.currentContributorAreaSlowWeight)} fileFast=${formatDecimal(snapshot.currentContributorFileFastWeight)} fileSlow=${formatDecimal(snapshot.currentContributorFileSlowWeight)}`,
   );
 
   if (!snapshot.relationships.length) {
@@ -118,18 +118,18 @@ function writeRelationship(
   relationship: ContributorRelationship,
 ): void {
   const samples =
-    relationship.sampleSharedPaths.length > 0 ? relationship.sampleSharedPaths.join(", ") : "none";
+    relationship.sampleSharedAreas.length > 0 ? relationship.sampleSharedAreas.join(", ") : "none";
 
   outputChannel.appendLine(
     `[relationship] contributor=${formatContributorIdentity(
       relationship.contributor,
     )} score=${formatDecimal(relationship.relationshipScore)} activity=${formatPercent(
       relationship.activityFactor,
-    )} overlap=${formatDecimal(relationship.overlapWeight)} recentOverlap=${formatDecimal(
-      relationship.recentOverlapWeight,
-    )} precision=${formatPercent(relationship.precision)} recall=${formatPercent(
-      relationship.recall,
-    )} sharedFiles=${relationship.sharedFileCount} sharedNodes=${relationship.sharedNodeCount} contributorFiles=${relationship.contributorFileCount} contributorCommits=${relationship.contributorCommitCount} recentCommits=${relationship.contributorRecentCommitCount} lastActiveDays=${formatDecimal(
+    )} fast=${formatPercent(relationship.fastSimilarity)} slow=${formatPercent(
+      relationship.slowSimilarity,
+    )} broadnessPenalty=${formatPercent(relationship.broadnessPenalty)} broadness=${formatPercent(
+      relationship.contributorBroadness,
+    )} sharedAreas=${relationship.sharedAreaCount} contributorFiles=${relationship.contributorFileCount} contributorCommits=${relationship.contributorCommitCount} recentCommits=${relationship.contributorRecentCommitCount} lastActiveDays=${formatDecimal(
       relationship.contributorLastCommitAgeDays,
     )} samples=${samples}`,
   );
@@ -149,11 +149,13 @@ function writeTopContributors(
     outputChannel.appendLine(
       `[top] commits=${summary.touchedCommitCount} recentCommits=${summary.recentCommitCount} lastActiveDays=${formatDecimal(
         summary.lastCommitAgeDays,
-      )} files=${summary.touchedFileCount} profile=${formatDecimal(
-        summary.profileWeight,
-      )} recent=${formatDecimal(summary.recentActivityWeight)} contributor=${formatContributorIdentity(
-        summary.contributor,
-      )}`,
+      )} files=${summary.touchedFileCount} areaFast=${formatDecimal(
+        summary.areaFastWeight,
+      )} areaSlow=${formatDecimal(summary.areaSlowWeight)} fileFast=${formatDecimal(
+        summary.fileFastWeight,
+      )} fileSlow=${formatDecimal(summary.fileSlowWeight)} broadness=${formatPercent(
+        summary.broadness,
+      )} contributor=${formatContributorIdentity(summary.contributor)}`,
     );
   });
 }

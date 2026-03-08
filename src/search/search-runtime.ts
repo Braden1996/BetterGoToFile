@@ -2,9 +2,12 @@ import * as path from "node:path";
 import * as vscode from "vscode";
 import { type BetterGoToFileConfig, BetterGoToFileConfigStore } from "../config";
 import {
+  scoreContributorFile,
+  scoreGitSessionOverlay,
   ContributorRelationshipIndex,
   type FileEntry,
   GitTrackedIndex,
+  normalizePath,
   type WorkspaceContributorRelationshipSnapshot,
   toRelativeWorkspacePath,
   WorkspaceFileIndex,
@@ -39,7 +42,12 @@ export class SearchRuntime implements vscode.Disposable {
     this.index = new WorkspaceFileIndex(this.config.workspaceIndex, log);
     this.frecencyStore = new FrecencyStore(frecencyPath, this.config.frecency);
     this.gitTrackedIndex = new GitTrackedIndex(this.config.git, log);
-    this.contributorRelationshipIndex = new ContributorRelationshipIndex(log);
+    this.contributorRelationshipIndex = new ContributorRelationshipIndex(
+      context.storageUri
+        ? path.join(context.storageUri.fsPath, "contributor-relationships")
+        : undefined,
+      log,
+    );
 
     this.disposables.push(
       this.emitter,
@@ -52,6 +60,9 @@ export class SearchRuntime implements vscode.Disposable {
         this.emitter.fire();
       }),
       this.gitTrackedIndex.onDidChange(() => {
+        this.emitter.fire();
+      }),
+      this.contributorRelationshipIndex.onDidChange(() => {
         this.emitter.fire();
       }),
       this.configStore.onDidChange(({ current }) => {
@@ -87,11 +98,14 @@ export class SearchRuntime implements vscode.Disposable {
 
   buildRankingContext(): FileSearchRankingContext {
     const now = Date.now();
+    const activePath = getActivePath();
 
     return {
-      activePath: getActivePath(),
+      activePath,
+      activePackageRoot: activePath ? this.index.getEntry(activePath)?.packageRoot : undefined,
       openPaths: collectOpenPaths(),
       getFrecencyScore: (relativePath) => this.frecencyStore.getCurrentScore(relativePath, now),
+      getGitPrior: (entry) => this.getGitPrior(entry),
       getGitTrackingState: (entry) => this.gitTrackedIndex.getTrackingState(entry.uri),
     };
   }
@@ -180,6 +194,42 @@ export class SearchRuntime implements vscode.Disposable {
         this.recentVisits.delete(pathKey);
       }
     }
+  }
+
+  private getGitPrior(entry: FileEntry): number {
+    const workspaceFolderPath = entry.workspaceFolderPath;
+    const contributorState = workspaceFolderPath
+      ? this.contributorRelationshipIndex.getSearchState(workspaceFolderPath)
+      : undefined;
+    const sessionState = this.gitTrackedIndex.getSessionState(entry.uri);
+    const repoRootPath = contributorState?.repoRootPath ?? sessionState?.repoRootPath;
+
+    if (!repoRootPath) {
+      return 0;
+    }
+
+    const repoRelativePath = normalizePath(path.relative(repoRootPath, entry.uri.fsPath));
+
+    if (!repoRelativePath || repoRelativePath.startsWith("..")) {
+      return 0;
+    }
+
+    const contributorPrior = contributorState
+      ? scoreContributorFile(
+          contributorState.profile,
+          repoRelativePath,
+          contributorState.packageRootDirectories,
+        ).total
+      : 0;
+    const sessionPrior = sessionState
+      ? scoreGitSessionOverlay(
+          sessionState.sessionOverlay,
+          repoRelativePath,
+          sessionState.packageRootDirectories,
+        )
+      : 0;
+
+    return contributorPrior + 1.6 * sessionPrior;
   }
 }
 

@@ -36,7 +36,7 @@ export function isSpecificQuery(
     return true;
   }
 
-  if (auto.revealOnPathSeparator && /[./\\_-]/.test(normalizedQuery)) {
+  if (auto.revealOnPathSeparator && /[./\\]/.test(normalizedQuery)) {
     return true;
   }
 
