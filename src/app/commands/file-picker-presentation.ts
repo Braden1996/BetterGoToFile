@@ -6,6 +6,8 @@ interface FilePickerPendingState {
   readonly query: string;
 }
 
+type FilePickerLockState = Omit<FilePickerPendingState, "query">;
+
 export function formatFilePickerTitle(isSearching: boolean): string {
   return isSearching ? "Better Go To File - Searching..." : "Better Go To File";
 }
@@ -29,4 +31,16 @@ export function getPendingFilePickerItem(
         : "Results will appear as the workspace index becomes ready.",
     alwaysShow: true,
   };
+}
+
+export function shouldLockFilePickerEntries(state: FilePickerLockState): boolean {
+  if (!state.hasEntries) {
+    return false;
+  }
+
+  if (state.currentSource === "live") {
+    return true;
+  }
+
+  return !state.isIndexing && !state.isRestoringSnapshot;
 }

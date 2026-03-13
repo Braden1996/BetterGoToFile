@@ -1,9 +1,10 @@
 import {
   DEFAULT_BETTER_GO_TO_FILE_CONFIG,
-  type GitignoredAutoConfig,
   type GitignoredConfig,
   type GitignoredVisibility,
 } from "../config/schema";
+
+const EXACT_FILENAME_WITH_EXTENSION_QUERY = /^[^/\\\s]+\.[^/\\\s.]+$/;
 
 export function shouldIncludeGitignoredFile(
   query: string,
@@ -19,28 +20,17 @@ export function shouldIncludeGitignoredFile(
     return false;
   }
 
-  return isSpecificQuery(query, config.auto);
+  return isSpecificQuery(query);
 }
 
-export function isSpecificQuery(
-  query: string,
-  auto: GitignoredAutoConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.gitignored.auto,
-): boolean {
+export function isSpecificQuery(query: string): boolean {
   const normalizedQuery = query.trim().toLowerCase();
 
   if (!normalizedQuery) {
     return false;
   }
 
-  if (normalizedQuery.length >= auto.minQueryLength) {
-    return true;
-  }
-
-  if (auto.revealOnPathSeparator && /[./\\]/.test(normalizedQuery)) {
-    return true;
-  }
-
-  return normalizedQuery.split(/\s+/).filter(Boolean).length >= auto.minTokenCount;
+  return EXACT_FILENAME_WITH_EXTENSION_QUERY.test(normalizedQuery);
 }
 
 function normalizeGitignoredConfig(

@@ -4,7 +4,11 @@ import type { FileEntry, GitTrackingState } from "../workspace";
 import { buildFilePickDescription } from "./file-pick-description";
 import { shouldIncludeGitignoredFile } from "./gitignored-visibility";
 import { formatDebugScoreDetail } from "./search-score-detail";
-import { scoreSearchCandidates, type SearchContext } from "./search-ranking";
+import {
+  collectRankedSearchCandidates,
+  scoreSearchCandidates,
+  type SearchContext,
+} from "./search-ranking";
 
 export interface FilePickItem extends vscode.QuickPickItem {
   readonly entry?: FileEntry;
@@ -17,7 +21,12 @@ interface FilePickOptions {
   readonly debugScoring?: boolean;
 }
 
-export function toQuickPickItems(
+interface FileSearchResult {
+  readonly items: readonly FilePickItem[];
+  readonly matchedEntries: readonly FileEntry[];
+}
+
+export function searchFileItems(
   entries: readonly FileEntry[],
   query: string,
   rankingContext: FileSearchRankingContext = {},
@@ -28,7 +37,7 @@ export function toQuickPickItems(
     "gitignored" | "picker" | "ranking"
   > = DEFAULT_BETTER_GO_TO_FILE_CONFIG,
   options: FilePickOptions = {},
-): FilePickItem[] {
+): FileSearchResult {
   const gitTrackingStateByPath = new Map<string, GitTrackingState>();
   const getGitTrackingState = (entry: FileEntry): GitTrackingState => {
     const cachedState = gitTrackingStateByPath.get(entry.relativePath);
@@ -50,18 +59,94 @@ export function toQuickPickItems(
     }
   }
 
+  const searchContext = {
+    ...rankingContext,
+    getGitTrackingState,
+  };
+  const rankedSearch = collectRankedSearchCandidates(
+    visibleEntries,
+    query,
+    searchContext,
+    config.picker.maxVisibleResults,
+    config.ranking,
+  );
+  const showDetailedScores = options.debugScoring || config.picker.showScores;
+
+  if (!showDetailedScores) {
+    return {
+      matchedEntries: rankedSearch.matchedCandidates,
+      items: createQuickPickItems(
+        rankedSearch.rankedCandidates,
+        query,
+        getGitTrackingState,
+        resolveFileIcon,
+        resolveGitignoredIcon,
+        config,
+      ),
+    };
+  }
+
   const rankedEntries = scoreSearchCandidates(
     visibleEntries,
     query,
-    {
-      ...rankingContext,
-      getGitTrackingState,
-    },
+    searchContext,
     config.picker.maxVisibleResults,
     config.ranking,
   );
 
   if (!rankedEntries.length) {
+    return {
+      matchedEntries: rankedSearch.matchedCandidates,
+      items: [
+        {
+          label: "No matching files",
+          alwaysShow: true,
+        },
+      ],
+    };
+  }
+
+  return {
+    matchedEntries: rankedSearch.matchedCandidates,
+    items: rankedEntries.map(({ candidate: entry, total, breakdown }) => {
+      const gitTrackingState = getGitTrackingState(entry);
+      const iconPath =
+        gitTrackingState === "ignored" ? resolveGitignoredIcon?.(entry) : resolveFileIcon?.(entry);
+
+      return {
+        label: entry.basename,
+        description: buildFilePickDescription(
+          entry,
+          query,
+          gitTrackingState,
+          config.picker.description,
+        ),
+        detail: options.debugScoring
+          ? formatDebugScoreDetail(total, breakdown)
+          : config.picker.showScores
+            ? formatScoreDetail(total)
+            : undefined,
+        alwaysShow: true,
+        iconPath: iconPath ?? vscode.ThemeIcon.File,
+        resourceUri: iconPath ? undefined : entry.uri,
+        entry,
+      };
+    }),
+  };
+}
+
+function createQuickPickItems(
+  entries: readonly FileEntry[],
+  query: string,
+  getGitTrackingState: (entry: FileEntry) => GitTrackingState,
+  resolveFileIcon?: ResolveFileIcon,
+  resolveGitignoredIcon?: ResolveFileIcon,
+  config: Pick<
+    BetterGoToFileConfig,
+    "gitignored" | "picker" | "ranking"
+  > = DEFAULT_BETTER_GO_TO_FILE_CONFIG,
+): FilePickItem[] {
+  if (!entries.length) {
     return [
       {
         label: "No matching files",
@@ -70,7 +155,7 @@ export function toQuickPickItems(
     ];
   }
 
-  return rankedEntries.map(({ candidate: entry, total, breakdown }) => {
+  return entries.map((entry) => {
     const gitTrackingState = getGitTrackingState(entry);
     const iconPath =
       gitTrackingState === "ignored" ? resolveGitignoredIcon?.(entry) : resolveFileIcon?.(entry);
@@ -83,11 +168,6 @@ export function toQuickPickItems(
         gitTrackingState,
         config.picker.description,
       ),
-      detail: options.debugScoring
-        ? formatDebugScoreDetail(total, breakdown)
-        : config.picker.showScores
-          ? formatScoreDetail(total)
-          : undefined,
       alwaysShow: true,
       iconPath: iconPath ?? vscode.ThemeIcon.File,
       resourceUri: iconPath ? undefined : entry.uri,

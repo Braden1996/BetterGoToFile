@@ -3,6 +3,7 @@ import type { GitTrackingState } from "../workspace";
 
 const AMBIGUITY_CANDIDATE_COUNT_CAP = 500;
 const GIT_PRIOR_SCORE_SCALE = 450;
+const SHORT_QUERY_FRECENCY_TRANSITION_LENGTH = 3;
 
 export interface SearchCandidate {
   readonly basename: string;
@@ -81,6 +82,11 @@ interface ScoredSearchCandidate<T extends SearchCandidate = SearchCandidate> {
   readonly breakdown: SearchScoreBreakdown;
 }
 
+interface RankedSearchCandidatesResult<T extends SearchCandidate = SearchCandidate> {
+  readonly rankedCandidates: readonly T[];
+  readonly matchedCandidates: readonly T[];
+}
+
 type TokenMatchRegion = "basename" | "package" | "path";
 
 interface TokenMatch {
@@ -104,6 +110,20 @@ interface PackageRootMatchTarget {
   readonly segmentIndex: number;
 }
 
+interface RankedSearchCandidate<T extends SearchCandidate = SearchCandidate> {
+  readonly candidate: T;
+  readonly lexical: number;
+  readonly total: number;
+}
+
+interface TokenMatchSummary {
+  readonly segmentIndex: number;
+  readonly region: TokenMatchRegion;
+}
+
+const packageRootMatchTargetCache = new WeakMap<SearchCandidate, PackageRootMatchTarget | null>();
+const directorySegmentsCache = new Map<string, readonly string[]>();
+
 export function rankSearchCandidates<T extends SearchCandidate>(
   candidates: readonly T[],
   query: string,
@@ -111,9 +131,80 @@ export function rankSearchCandidates<T extends SearchCandidate>(
   limit = 200,
   ranking: RankingConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.ranking,
 ): T[] {
-  return scoreSearchCandidates(candidates, query, context, limit, ranking).map(
-    ({ candidate }) => candidate,
-  );
+  return collectRankedSearchCandidates(
+    candidates,
+    query,
+    context,
+    limit,
+    ranking,
+  ).rankedCandidates.slice();
+}
+
+export function collectRankedSearchCandidates<T extends SearchCandidate>(
+  candidates: readonly T[],
+  query: string,
+  context: SearchContext<T> = {},
+  limit = 200,
+  ranking: RankingConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.ranking,
+): RankedSearchCandidatesResult<T> {
+  const normalizedQuery = query.trim().toLowerCase();
+  const queryStrength = computeQueryStrength(normalizedQuery);
+  const activeDirectory = getDirectory(context.activePath);
+
+  if (!normalizedQuery) {
+    const ranked: RankedSearchCandidate<T>[] = [];
+
+    for (const candidate of candidates) {
+      insertRankedCandidate(
+        ranked,
+        {
+          candidate,
+          lexical: 0,
+          total: computeContextScore(candidate, context, activeDirectory, queryStrength, ranking),
+        },
+        limit,
+      );
+    }
+
+    return {
+      rankedCandidates: ranked.map(({ candidate }) => candidate),
+      matchedCandidates: candidates,
+    };
+  }
+
+  const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
+  const lexicalMatches: { candidate: T; lexical: number }[] = [];
+
+  for (const candidate of candidates) {
+    const lexical = scoreCandidateLexicalTotal(candidate, tokens, ranking);
+
+    if (lexical !== null) {
+      lexicalMatches.push({ candidate, lexical });
+    }
+  }
+
+  const ambiguity = computeAmbiguity(lexicalMatches.length);
+  const ranked: RankedSearchCandidate<T>[] = [];
+
+  for (const { candidate, lexical } of lexicalMatches) {
+    insertRankedCandidate(
+      ranked,
+      {
+        candidate,
+        lexical,
+        total:
+          lexical +
+          computeContextScore(candidate, context, activeDirectory, queryStrength, ranking) +
+          computeGitPriorScore(candidate, context, ambiguity * queryStrength),
+      },
+      limit,
+    );
+  }
+
+  return {
+    rankedCandidates: ranked.map(({ candidate }) => candidate),
+    matchedCandidates: lexicalMatches.map(({ candidate }) => candidate),
+  };
 }
 
 export function scoreSearchCandidates<T extends SearchCandidate>(
@@ -124,22 +215,26 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
   ranking: RankingConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.ranking,
 ): ScoredSearchCandidate<T>[] {
   const normalizedQuery = query.trim().toLowerCase();
+  const queryStrength = computeQueryStrength(normalizedQuery);
   const activeDirectory = getDirectory(context.activePath);
 
   if (!normalizedQuery) {
-    return candidates
-      .map((candidate) => {
-        const lexicalBreakdown = createEmptyLexicalScoreBreakdown();
-        const contextBreakdown = computeContextBreakdown(
-          candidate,
-          context,
-          activeDirectory,
-          false,
-          ranking,
-        );
-        const gitPriorBreakdown = computeGitPriorBreakdown(candidate, context, 1);
+    const ranked: ScoredSearchCandidate<T>[] = [];
 
-        return {
+    for (const candidate of candidates) {
+      const lexicalBreakdown = createEmptyLexicalScoreBreakdown();
+      const contextBreakdown = computeContextBreakdown(
+        candidate,
+        context,
+        activeDirectory,
+        queryStrength,
+        ranking,
+      );
+      const gitPriorBreakdown = computeGitPriorBreakdown(candidate, context, 0);
+
+      insertRankedCandidate(
+        ranked,
+        {
           candidate,
           lexical: 0,
           total: contextBreakdown.total + gitPriorBreakdown.total,
@@ -148,13 +243,12 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
             context: contextBreakdown,
             gitPrior: gitPriorBreakdown,
           },
-        };
-      })
-      .sort(
-        (left, right) =>
-          right.total - left.total || compareSearchCandidates(left.candidate, right.candidate),
-      )
-      .slice(0, limit);
+        },
+        limit,
+      );
+    }
+
+    return ranked;
   }
 
   const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
@@ -178,10 +272,14 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
       candidate,
       context,
       activeDirectory,
-      true,
+      queryStrength,
       ranking,
     );
-    const gitPriorBreakdown = computeGitPriorBreakdown(candidate, context, ambiguity);
+    const gitPriorBreakdown = computeGitPriorBreakdown(
+      candidate,
+      context,
+      ambiguity * queryStrength,
+    );
     const lexical = lexicalBreakdown.total;
 
     ranked.push({
@@ -196,14 +294,13 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
     });
   }
 
-  return ranked
-    .sort(
-      (left, right) =>
-        right.total - left.total ||
-        right.lexical - left.lexical ||
-        compareSearchCandidates(left.candidate, right.candidate),
-    )
-    .slice(0, limit);
+  const topRanked: ScoredSearchCandidate<T>[] = [];
+
+  for (const result of ranked) {
+    insertRankedCandidate(topRanked, result, limit);
+  }
+
+  return topRanked;
 }
 
 function computeAmbiguity(candidateCount: number): number {
@@ -257,6 +354,35 @@ function scoreCandidateLexical(
     queryStructureBonus,
     pathLengthPenalty,
   };
+}
+
+function scoreCandidateLexicalTotal(
+  candidate: SearchCandidate,
+  tokens: readonly string[],
+  ranking: RankingConfig,
+): number | null {
+  let total = 0;
+  const matches: TokenMatchSummary[] = [];
+  const packageRootTarget = getPackageRootMatchTarget(candidate);
+
+  for (const token of tokens) {
+    const tokenMatch = scoreToken(candidate, token, ranking, packageRootTarget);
+
+    if (tokenMatch === null) {
+      return null;
+    }
+
+    total += tokenMatch.score;
+    matches.push({
+      segmentIndex: tokenMatch.segmentIndex,
+      region: tokenMatch.region,
+    });
+  }
+
+  total += computeQueryStructureBonusFromSummaries(matches, ranking);
+  total -= candidate.relativePath.length * 0.08;
+
+  return total;
 }
 
 function scoreToken(
@@ -483,7 +609,7 @@ function computeContextBreakdown<T extends SearchCandidate>(
   candidate: T,
   context: SearchContext<T>,
   activeDirectory: string | undefined,
-  hasQuery: boolean,
+  queryStrength: number,
   ranking: RankingConfig,
 ): ContextScoreBreakdown {
   const { context: config } = ranking;
@@ -500,7 +626,11 @@ function computeContextBreakdown<T extends SearchCandidate>(
       "frecency",
       Math.round(
         Math.log2(1 + frecencyScore) *
-          (hasQuery ? config.frecencyQueryMultiplier : config.frecencyBrowseMultiplier),
+          interpolateScore(
+            config.frecencyBrowseMultiplier,
+            config.frecencyQueryMultiplier,
+            queryStrength,
+          ),
       ),
     );
   }
@@ -508,25 +638,19 @@ function computeContextBreakdown<T extends SearchCandidate>(
   const gitTrackingState = context.getGitTrackingState?.(candidate);
 
   if (gitTrackingState === "tracked") {
-    addContribution("tracked", hasQuery ? config.trackedQueryBoost : config.trackedBrowseBoost);
+    addContribution("tracked", Math.round(config.trackedQueryBoost * queryStrength));
   } else if (gitTrackingState === "ignored") {
-    addContribution(
-      "ignored",
-      -(hasQuery ? config.ignoredQueryPenalty : config.ignoredBrowsePenalty),
-    );
+    addContribution("ignored", -Math.round(config.ignoredQueryPenalty * queryStrength));
   } else if (gitTrackingState === "untracked") {
-    addContribution(
-      "untracked",
-      -(hasQuery ? config.untrackedQueryPenalty : config.untrackedBrowsePenalty),
-    );
+    addContribution("untracked", -Math.round(config.untrackedQueryPenalty * queryStrength));
   }
 
   if (context.openPaths?.has(candidate.relativePath)) {
-    addContribution("open", hasQuery ? config.openQueryBoost : config.openBrowseBoost);
+    addContribution("open", Math.round(config.openQueryBoost * queryStrength));
   }
 
   if (context.activePath === candidate.relativePath) {
-    addContribution("active", hasQuery ? config.activeQueryBoost : config.activeBrowseBoost);
+    addContribution("active", Math.round(config.activeQueryBoost * queryStrength));
   }
 
   if (
@@ -535,7 +659,7 @@ function computeContextBreakdown<T extends SearchCandidate>(
     context.activePackageRoot === candidate.packageRoot &&
     candidate.relativePath !== context.activePath
   ) {
-    addContribution("same-pkg", computeSamePackageBoost(config, hasQuery));
+    addContribution("same-pkg", Math.round(computeSamePackageBoost(config) * queryStrength));
   }
 
   if (!activeDirectory || candidate.relativePath === context.activePath) {
@@ -543,10 +667,7 @@ function computeContextBreakdown<T extends SearchCandidate>(
   }
 
   if (candidate.directory === activeDirectory) {
-    addContribution(
-      "same-dir",
-      hasQuery ? config.sameDirectoryQueryBoost : config.sameDirectoryBrowseBoost,
-    );
+    addContribution("same-dir", Math.round(config.sameDirectoryQueryBoost * queryStrength));
     return finalizeContextScoreBreakdown(contributions);
   }
 
@@ -555,17 +676,89 @@ function computeContextBreakdown<T extends SearchCandidate>(
   if (sharedPrefixSegments >= 2) {
     addContribution(
       `shared-prefix x${sharedPrefixSegments}`,
-      sharedPrefixSegments *
-        (hasQuery ? config.sharedPrefixSegmentQueryBoost : config.sharedPrefixSegmentBrowseBoost),
+      Math.round(sharedPrefixSegments * config.sharedPrefixSegmentQueryBoost * queryStrength),
     );
   } else if (sharedPrefixSegments === 1) {
     addContribution(
       "shared-prefix",
-      hasQuery ? config.sharedPrefixSingleQueryBoost : config.sharedPrefixSingleBrowseBoost,
+      Math.round(config.sharedPrefixSingleQueryBoost * queryStrength),
     );
   }
 
   return finalizeContextScoreBreakdown(contributions);
+}
+
+function computeContextScore<T extends SearchCandidate>(
+  candidate: T,
+  context: SearchContext<T>,
+  activeDirectory: string | undefined,
+  queryStrength: number,
+  ranking: RankingConfig,
+): number {
+  const { context: config } = ranking;
+  let total = 0;
+  const frecencyScore = context.getFrecencyScore?.(candidate.relativePath) ?? 0;
+
+  if (frecencyScore > 0) {
+    total += Math.round(
+      Math.log2(1 + frecencyScore) *
+        interpolateScore(
+          config.frecencyBrowseMultiplier,
+          config.frecencyQueryMultiplier,
+          queryStrength,
+        ),
+    );
+  }
+
+  const gitTrackingState = context.getGitTrackingState?.(candidate);
+
+  if (gitTrackingState === "tracked") {
+    total += Math.round(config.trackedQueryBoost * queryStrength);
+  } else if (gitTrackingState === "ignored") {
+    total -= Math.round(config.ignoredQueryPenalty * queryStrength);
+  } else if (gitTrackingState === "untracked") {
+    total -= Math.round(config.untrackedQueryPenalty * queryStrength);
+  }
+
+  if (context.openPaths?.has(candidate.relativePath)) {
+    total += Math.round(config.openQueryBoost * queryStrength);
+  }
+
+  if (context.activePath === candidate.relativePath) {
+    total += Math.round(config.activeQueryBoost * queryStrength);
+  }
+
+  if (
+    context.activePackageRoot &&
+    candidate.packageRoot &&
+    context.activePackageRoot === candidate.packageRoot &&
+    candidate.relativePath !== context.activePath
+  ) {
+    total += Math.round(computeSamePackageBoost(config) * queryStrength);
+  }
+
+  if (!activeDirectory || candidate.relativePath === context.activePath) {
+    return total;
+  }
+
+  if (candidate.directory === activeDirectory) {
+    return total + Math.round(config.sameDirectoryQueryBoost * queryStrength);
+  }
+
+  const sharedPrefixSegments = countSharedPrefixSegments(candidate.directory, activeDirectory);
+
+  if (sharedPrefixSegments >= 2) {
+    return (
+      total +
+      Math.round(sharedPrefixSegments * config.sharedPrefixSegmentQueryBoost * queryStrength)
+    );
+  }
+
+  if (sharedPrefixSegments === 1) {
+    return total + Math.round(config.sharedPrefixSingleQueryBoost * queryStrength);
+  }
+
+  return total;
 }
 
 function getDirectory(relativePath?: string): string | undefined {
@@ -587,8 +780,8 @@ function countSharedPrefixSegments(left: string, right: string): number {
     return 0;
   }
 
-  const leftSegments = left.split("/").filter(Boolean);
-  const rightSegments = right.split("/").filter(Boolean);
+  const leftSegments = getDirectorySegments(left);
+  const rightSegments = getDirectorySegments(right);
   const count = Math.min(leftSegments.length, rightSegments.length);
   let shared = 0;
 
@@ -604,7 +797,14 @@ function countSharedPrefixSegments(left: string, right: string): number {
 }
 
 function getPackageRootMatchTarget(candidate: SearchCandidate): PackageRootMatchTarget | undefined {
+  const cachedTarget = packageRootMatchTargetCache.get(candidate);
+
+  if (cachedTarget !== undefined) {
+    return cachedTarget ?? undefined;
+  }
+
   if (!candidate.packageRoot) {
+    packageRootMatchTargetCache.set(candidate, null);
     return undefined;
   }
 
@@ -613,18 +813,21 @@ function getPackageRootMatchTarget(candidate: SearchCandidate): PackageRootMatch
     separatorIndex >= 0 ? candidate.packageRoot.slice(separatorIndex + 1) : candidate.packageRoot;
 
   if (!originalBasename) {
+    packageRootMatchTargetCache.set(candidate, null);
     return undefined;
   }
 
   const searchBasename = originalBasename.toLowerCase();
   const pathIndex = candidate.packageRoot.length - originalBasename.length;
-
-  return {
+  const target = {
     originalBasename,
     searchBasename,
     pathIndex,
     segmentIndex: countSegmentIndexAtPathIndex(candidate.searchPath, pathIndex),
   };
+
+  packageRootMatchTargetCache.set(candidate, target);
+  return target;
 }
 
 function scorePackageRootToken(
@@ -722,6 +925,13 @@ function computeQueryStructureBonus(
   matches: readonly TokenMatch[],
   ranking: RankingConfig,
 ): number {
+  return computeQueryStructureBonusFromSummaries(matches, ranking);
+}
+
+function computeQueryStructureBonusFromSummaries(
+  matches: readonly TokenMatchSummary[],
+  ranking: RankingConfig,
+): number {
   if (matches.length < 2) {
     return 0;
   }
@@ -752,6 +962,19 @@ function computeQueryStructureBonus(
   }
 
   return bonus;
+}
+
+function getDirectorySegments(directory: string): readonly string[] {
+  const cachedSegments = directorySegmentsCache.get(directory);
+
+  if (cachedSegments) {
+    return cachedSegments;
+  }
+
+  const segments = directory.split("/").filter(Boolean);
+
+  directorySegmentsCache.set(directory, segments);
+  return segments;
 }
 
 function createTokenMatch(
@@ -807,12 +1030,8 @@ function interpolateScore(minimum: number, maximum: number, weight: number): num
   return minimum + (maximum - minimum) * weight;
 }
 
-function computeSamePackageBoost(config: RankingConfig["context"], hasQuery: boolean): number {
-  if (hasQuery) {
-    return config.sameDirectoryQueryBoost + config.sharedPrefixSegmentQueryBoost * 3;
-  }
-
-  return config.sameDirectoryBrowseBoost + config.sharedPrefixSegmentBrowseBoost * 3;
+function computeSamePackageBoost(config: RankingConfig["context"]): number {
+  return config.sameDirectoryQueryBoost + config.sharedPrefixSegmentQueryBoost * 3;
 }
 
 function isBoundary(value: string, index: number): boolean {
@@ -840,24 +1059,73 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
+function computeQueryStrength(normalizedQuery: string): number {
+  const queryLength = normalizedQuery.replace(/\s+/g, "").length;
+
+  return clamp(queryLength / SHORT_QUERY_FRECENCY_TRANSITION_LENGTH, 0, 1);
+}
+
+function computeGitPriorScore<T extends SearchCandidate>(
+  candidate: T,
+  context: SearchContext<T>,
+  ambiguity: number,
+): number {
+  if (ambiguity <= 0) {
+    return 0;
+  }
+
+  const rawPrior = context.getGitPrior?.(candidate) ?? 0;
+
+  return rawPrior > 0 ? Math.log1p(rawPrior) * GIT_PRIOR_SCORE_SCALE * ambiguity : 0;
+}
+
+function insertRankedCandidate<T extends SearchCandidate, U extends RankedSearchCandidate<T>>(
+  ranked: U[],
+  candidate: U,
+  limit: number,
+): void {
+  if (limit <= 0) {
+    return;
+  }
+
+  let index = ranked.length;
+
+  while (index > 0 && compareRankedSearchCandidates(candidate, ranked[index - 1]) < 0) {
+    index -= 1;
+  }
+
+  if (index >= limit) {
+    return;
+  }
+
+  ranked.splice(index, 0, candidate);
+
+  if (ranked.length > limit) {
+    ranked.pop();
+  }
+}
+
+function compareRankedSearchCandidates<
+  T extends SearchCandidate,
+  U extends RankedSearchCandidate<T>,
+>(left: U, right: U): number {
+  return (
+    right.total - left.total ||
+    right.lexical - left.lexical ||
+    compareSearchCandidates(left.candidate, right.candidate)
+  );
+}
+
 function computeGitPriorBreakdown<T extends SearchCandidate>(
   candidate: T,
   context: SearchContext<T>,
   ambiguity: number,
 ): GitPriorScoreBreakdown {
-  if (ambiguity <= 0) {
-    return {
-      total: 0,
-      rawPrior: 0,
-      ambiguity: 0,
-    };
-  }
-
-  const rawPrior = context.getGitPrior?.(candidate) ?? 0;
+  const rawPrior = ambiguity > 0 ? (context.getGitPrior?.(candidate) ?? 0) : 0;
 
   return {
-    total: rawPrior > 0 ? Math.log1p(rawPrior) * GIT_PRIOR_SCORE_SCALE * ambiguity : 0,
+    total: computeGitPriorScore(candidate, context, ambiguity),
     rawPrior,
-    ambiguity,
+    ambiguity: ambiguity > 0 ? ambiguity : 0,
   };
 }

@@ -56,20 +56,20 @@ This means a file like `packages/runtimes/mobile-app/src/button.tsx` carries bot
 
 For each token, the scorer stops at the first matching category in this order:
 
-| Order | Match type | Notes |
-| --- | --- | --- |
-| 1 | Basename exact | `button.tsx` matches `button.tsx` |
-| 2 | Full path exact | `src/button.tsx` matches the whole relative path |
-| 3 | Full path prefix | Only used when the token contains a path separator |
-| 4 | Basename prefix | `button` matches `button-grid.component.tsx` |
-| 5 | Basename boundary | Match starts at a boundary such as `-`, `_`, `.`, `/`, or camelCase |
-| 6 | Basename substring | Lower-value basename containment |
-| 7 | Package exact/prefix/boundary/substring | Uses the basename of the nearest package root |
-| 8 | Full path boundary | Boundary match anywhere in the path |
-| 9 | Full path substring | Lower-value path containment |
-| 10 | Basename fuzzy | Ordered character match on basename |
-| 11 | Package fuzzy | Ordered character match on package basename |
-| 12 | Full path fuzzy | Ordered character match on full path |
+| Order | Match type                              | Notes                                                               |
+| ----- | --------------------------------------- | ------------------------------------------------------------------- |
+| 1     | Basename exact                          | `button.tsx` matches `button.tsx`                                   |
+| 2     | Full path exact                         | `src/button.tsx` matches the whole relative path                    |
+| 3     | Full path prefix                        | Only used when the token contains a path separator                  |
+| 4     | Basename prefix                         | `button` matches `button-grid.component.tsx`                        |
+| 5     | Basename boundary                       | Match starts at a boundary such as `-`, `_`, `.`, `/`, or camelCase |
+| 6     | Basename substring                      | Lower-value basename containment                                    |
+| 7     | Package exact/prefix/boundary/substring | Uses the basename of the nearest package root                       |
+| 8     | Full path boundary                      | Boundary match anywhere in the path                                 |
+| 9     | Full path substring                     | Lower-value path containment                                        |
+| 10    | Basename fuzzy                          | Ordered character match on basename                                 |
+| 11    | Package fuzzy                           | Ordered character match on package basename                         |
+| 12    | Full path fuzzy                         | Ordered character match on full path                                |
 
 Important details:
 

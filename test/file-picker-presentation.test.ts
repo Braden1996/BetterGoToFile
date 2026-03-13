@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   formatFilePickerTitle,
   getPendingFilePickerItem,
+  shouldLockFilePickerEntries,
 } from "../src/app/commands/file-picker-presentation";
 
 describe("file picker presentation", () => {
@@ -62,5 +63,27 @@ describe("file picker presentation", () => {
         query: "src",
       }),
     ).toBeUndefined();
+  });
+
+  test("keeps cached entries unlocked while the live refresh is still running", () => {
+    expect(
+      shouldLockFilePickerEntries({
+        currentSource: "cache",
+        hasEntries: true,
+        isIndexing: true,
+        isRestoringSnapshot: false,
+      }),
+    ).toBe(false);
+  });
+
+  test("locks entries once live results are available", () => {
+    expect(
+      shouldLockFilePickerEntries({
+        currentSource: "live",
+        hasEntries: true,
+        isIndexing: false,
+        isRestoringSnapshot: false,
+      }),
+    ).toBe(true);
   });
 });

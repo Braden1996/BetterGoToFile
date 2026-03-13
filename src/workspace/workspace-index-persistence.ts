@@ -10,7 +10,7 @@ import {
   type WorkspaceFolderIndexSnapshot,
 } from "./workspace-index-snapshot";
 
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const DEFAULT_FLUSH_DELAY_MS = 1500;
 
 interface PersistedWorkspaceIndexSnapshot {

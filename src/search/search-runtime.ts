@@ -41,8 +41,13 @@ export class SearchRuntime implements vscode.Disposable {
   private readonly contributorRelationshipIndex: ContributorRelationshipIndex;
   private readonly disposables: vscode.Disposable[] = [];
   private readonly recentVisits = new Map<string, number>();
+  private readonly cachedGitPriors = new Map<string, number>();
+  private readonly cachedGitTrackingStates = new Map<string, GitTrackingState>();
   private config: BetterGoToFileConfig;
+  private openPaths = collectOpenPaths();
   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
+  private isPickerReady = false;
+  private readonly pickerReadyPromise: Promise<void>;
 
   readonly onDidChange = this.emitter.event;
 
@@ -72,6 +77,14 @@ export class SearchRuntime implements vscode.Disposable {
         : undefined,
       log,
     );
+    this.pickerReadyPromise = Promise.all([
+      this.index.ready(),
+      this.frecencyStore.ready(),
+      this.gitTrackedIndex.ready(),
+    ]).then(() => {
+      this.isPickerReady = true;
+      this.emitter.fire();
+    });
 
     this.disposables.push(
       this.emitter,
@@ -81,12 +94,17 @@ export class SearchRuntime implements vscode.Disposable {
       this.gitTrackedIndex,
       this.contributorRelationshipIndex,
       this.index.onDidChange(() => {
+        this.cachedGitPriors.clear();
+        this.cachedGitTrackingStates.clear();
         this.emitter.fire();
       }),
       this.gitTrackedIndex.onDidChange(() => {
+        this.cachedGitPriors.clear();
+        this.cachedGitTrackingStates.clear();
         this.emitter.fire();
       }),
       this.contributorRelationshipIndex.onDidChange(() => {
+        this.cachedGitPriors.clear();
         this.emitter.fire();
       }),
       this.configStore.onDidChange(({ current }) => {
@@ -97,6 +115,7 @@ export class SearchRuntime implements vscode.Disposable {
         this.emitter.fire();
       }),
       vscode.window.tabGroups.onDidChangeTabs(() => {
+        this.openPaths = collectOpenPaths();
         this.emitter.fire();
       }),
     );
@@ -105,7 +124,11 @@ export class SearchRuntime implements vscode.Disposable {
   }
 
   async ready(): Promise<void> {
-    await Promise.all([this.index.ready(), this.frecencyStore.ready()]);
+    await this.pickerReadyPromise;
+  }
+
+  isReadyForPicker(): boolean {
+    return this.isPickerReady;
   }
 
   getConfig(): BetterGoToFileConfig {
@@ -121,7 +144,7 @@ export class SearchRuntime implements vscode.Disposable {
 
     return {
       index: this.index.getStatus(),
-      openPathCount: collectOpenPaths().size,
+      openPathCount: this.openPaths.size,
       scoringPreset: this.config.scoring.preset,
       usingCustomScoring: isUsingCustomScoring(this.config),
       gitignoredVisibility: this.config.gitignored.visibility,
@@ -138,13 +161,11 @@ export class SearchRuntime implements vscode.Disposable {
     const now = Date.now();
     const activePath = getActivePath();
     const frecencyScores = new Map<string, number>();
-    const gitPriors = new Map<string, number>();
-    const gitTrackingStates = new Map<string, GitTrackingState>();
 
     return {
       activePath,
       activePackageRoot: activePath ? this.index.getEntry(activePath)?.packageRoot : undefined,
-      openPaths: collectOpenPaths(),
+      openPaths: this.openPaths,
       getFrecencyScore: (relativePath) => {
         const cachedScore = frecencyScores.get(relativePath);
 
@@ -158,7 +179,7 @@ export class SearchRuntime implements vscode.Disposable {
         return score;
       },
       getGitPrior: (entry) => {
-        const cachedPrior = gitPriors.get(entry.relativePath);
+        const cachedPrior = this.cachedGitPriors.get(entry.relativePath);
 
         if (cachedPrior !== undefined) {
           return cachedPrior;
@@ -166,11 +187,11 @@ export class SearchRuntime implements vscode.Disposable {
 
         const prior = this.getGitPrior(entry);
 
-        gitPriors.set(entry.relativePath, prior);
+        this.cachedGitPriors.set(entry.relativePath, prior);
         return prior;
       },
       getGitTrackingState: (entry) => {
-        const cachedState = gitTrackingStates.get(entry.relativePath);
+        const cachedState = this.cachedGitTrackingStates.get(entry.relativePath);
 
         if (cachedState !== undefined) {
           return cachedState;
@@ -178,7 +199,7 @@ export class SearchRuntime implements vscode.Disposable {
 
         const gitTrackingState = this.gitTrackedIndex.getTrackingState(entry.uri);
 
-        gitTrackingStates.set(entry.relativePath, gitTrackingState);
+        this.cachedGitTrackingStates.set(entry.relativePath, gitTrackingState);
         return gitTrackingState;
       },
     };
@@ -220,6 +241,8 @@ export class SearchRuntime implements vscode.Disposable {
     this.index.updateConfig(config.workspaceIndex);
     this.frecencyStore.updateOptions(config.frecency);
     this.gitTrackedIndex.updateConfig(config.git);
+    this.cachedGitPriors.clear();
+    this.cachedGitTrackingStates.clear();
     this.scheduleImplicitOpen(vscode.window.activeTextEditor);
     this.emitter.fire();
   }

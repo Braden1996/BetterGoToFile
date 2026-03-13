@@ -10,6 +10,7 @@ import { createPathGlobMatcher, type PathGlobMatcher } from "./path-glob";
 import {
   createEmptyIndexedRoot,
   createIndexedDirectoryNode,
+  createIndexedRootFromFilePaths,
   createIndexedFileNode,
   createWorkspaceFolderIndexSnapshot,
   type IndexedDirectoryNode,
@@ -18,6 +19,7 @@ import {
   replaceIndexedDirectory,
   type WorkspaceFolderIndexSnapshot,
 } from "./workspace-index-snapshot";
+import { loadWorkspaceFilePathsFromGit, resolveRepoRoot } from "./git-utils";
 import { WorkspaceIndexPersistence } from "./workspace-index-persistence";
 import { normalizeDirectory, normalizePath } from "./workspace-path";
 
@@ -46,6 +48,11 @@ interface ScanBudget {
 interface WorkspaceFileIndexOptions {
   readonly persistenceFilePath?: string;
   readonly log?: (message: string) => void;
+}
+
+interface GitWorkspacePathsResult {
+  readonly paths: readonly string[];
+  readonly isTruncated: boolean;
 }
 
 export class WorkspaceFileIndex implements vscode.Disposable {
@@ -235,7 +242,7 @@ export class WorkspaceFileIndex implements vscode.Disposable {
       const snapshot =
         scanBudget.remainingFiles !== undefined && scanBudget.remainingFiles <= 0
           ? createWorkspaceFolderIndexSnapshot(folder, createEmptyIndexedRoot(folder.uri), true)
-          : await this.scanWorkspaceFolder(folder, scanBudget);
+          : await this.indexWorkspaceFolder(folder, scanBudget);
 
       nextSnapshots.set(folder.uri.fsPath, snapshot);
     }
@@ -343,6 +350,64 @@ export class WorkspaceFileIndex implements vscode.Disposable {
     return createWorkspaceFolderIndexSnapshot(folder, root, scanBudget.didHitLimit);
   }
 
+  private async indexWorkspaceFolder(
+    folder: vscode.WorkspaceFolder,
+    scanBudget: ScanBudget,
+  ): Promise<WorkspaceFolderIndexSnapshot> {
+    const gitSnapshot = await this.scanWorkspaceFolderFromGit(folder, scanBudget);
+
+    if (gitSnapshot) {
+      return gitSnapshot;
+    }
+
+    return this.scanWorkspaceFolder(folder, scanBudget);
+  }
+
+  private async scanWorkspaceFolderFromGit(
+    folder: vscode.WorkspaceFolder,
+    scanBudget: ScanBudget,
+  ): Promise<WorkspaceFolderIndexSnapshot | undefined> {
+    if (folder.uri.scheme !== "file") {
+      return undefined;
+    }
+
+    try {
+      const repoRootPath = await resolveRepoRoot(folder.uri.fsPath);
+      const workspaceFolderPath = normalizePath(folder.uri.fsPath);
+      const repoRelativeFolderPath = normalizePath(path.relative(repoRootPath, folder.uri.fsPath));
+
+      if (repoRelativeFolderPath.startsWith("..")) {
+        return undefined;
+      }
+
+      const gitPaths = await this.loadWorkspacePathsFromGit(
+        repoRootPath,
+        workspaceFolderPath,
+        repoRelativeFolderPath === "." ? "" : repoRelativeFolderPath,
+        scanBudget,
+      );
+      const root = createIndexedRootFromFilePaths(folder.uri, gitPaths.paths);
+
+      if (gitPaths.paths.length === 0) {
+        return createWorkspaceFolderIndexSnapshot(
+          folder,
+          createEmptyIndexedRoot(folder.uri),
+          gitPaths.isTruncated,
+        );
+      }
+
+      if (gitPaths.isTruncated) {
+        scanBudget.didHitLimit = true;
+      }
+
+      this.log?.(`Indexed ${gitPaths.paths.length} Git-listed files for ${folder.name}.`);
+
+      return createWorkspaceFolderIndexSnapshot(folder, root, gitPaths.isTruncated);
+    } catch {
+      return undefined;
+    }
+  }
+
   private async scanDirectoryTree(
     folder: vscode.WorkspaceFolder,
     relativeDirectory: string,
@@ -441,6 +506,74 @@ export class WorkspaceFileIndex implements vscode.Disposable {
 
       return undefined;
     }
+  }
+
+  private async loadWorkspacePathsFromGit(
+    repoRootPath: string,
+    workspaceFolderPath: string,
+    repoRelativeFolderPath: string,
+    scanBudget: ScanBudget,
+  ): Promise<GitWorkspacePathsResult> {
+    const relativePrefix = repoRelativeFolderPath ? `${repoRelativeFolderPath}/` : "";
+    const paths: string[] = [];
+    const seenPaths = new Set<string>();
+    let isTruncated = false;
+
+    for (const repoRelativePath of await loadWorkspaceFilePathsFromGit(
+      repoRootPath,
+      repoRelativeFolderPath,
+    )) {
+      const normalizedRepoRelativePath = normalizePath(repoRelativePath.trim());
+
+      if (!normalizedRepoRelativePath) {
+        continue;
+      }
+
+      let workspaceRelativePath = normalizedRepoRelativePath;
+
+      if (relativePrefix) {
+        if (!normalizedRepoRelativePath.startsWith(relativePrefix)) {
+          continue;
+        }
+
+        workspaceRelativePath = normalizedRepoRelativePath.slice(relativePrefix.length);
+      }
+
+      if (
+        !workspaceRelativePath ||
+        seenPaths.has(workspaceRelativePath) ||
+        !shouldIndexRelativePath(workspaceRelativePath, this.excludedDirectories) ||
+        !this.fileMatcher(workspaceRelativePath)
+      ) {
+        continue;
+      }
+
+      if (scanBudget.remainingFiles !== undefined && scanBudget.remainingFiles <= 0) {
+        isTruncated = true;
+        break;
+      }
+
+      seenPaths.add(workspaceRelativePath);
+      paths.push(workspaceRelativePath);
+
+      if (scanBudget.remainingFiles !== undefined) {
+        scanBudget.remainingFiles -= 1;
+      }
+    }
+
+    paths.sort((left, right) => left.localeCompare(right));
+
+    if (!paths.length && !repoRelativeFolderPath && workspaceFolderPath === repoRootPath) {
+      return {
+        paths,
+        isTruncated,
+      };
+    }
+
+    return {
+      paths,
+      isTruncated,
+    };
   }
 
   private createWatcher(): vscode.Disposable {

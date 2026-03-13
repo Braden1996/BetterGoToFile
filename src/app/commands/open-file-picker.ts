@@ -1,8 +1,12 @@
 import * as vscode from "vscode";
 import { createGitignoredFileIconPath, loadFileIconResolver } from "../../icons";
-import { type FilePickItem, SearchRuntime, toQuickPickItems } from "../../search";
+import { type FilePickItem, SearchRuntime, searchFileItems } from "../../search";
 import type { FileEntry } from "../../workspace";
-import { formatFilePickerTitle, getPendingFilePickerItem } from "./file-picker-presentation";
+import {
+  formatFilePickerTitle,
+  getPendingFilePickerItem,
+  shouldLockFilePickerEntries,
+} from "./file-picker-presentation";
 
 interface ShowBetterGoToFileOptions {
   readonly debugScoring?: boolean;
@@ -35,6 +39,8 @@ export async function showBetterGoToFile(
   let searchTimer: ReturnType<typeof setTimeout> | undefined;
   let searchGeneration = 0;
   let isDisposed = false;
+  let sessionEntries = runtime.getEntries();
+  let hasLockedSessionEntries = shouldLockEntries();
 
   quickPick.title = formatFilePickerTitle(true);
   quickPick.placeholder =
@@ -73,10 +79,20 @@ export async function showBetterGoToFile(
   };
 
   const getPendingItems = (query: string): FilePickItem[] | undefined => {
+    if (!sessionEntries.length && !runtime.isReadyForPicker()) {
+      return [
+        {
+          label: query.trim() ? "Searching workspace files..." : "Loading workspace files...",
+          description: "Preparing tracked file metadata.",
+          alwaysShow: true,
+        },
+      ];
+    }
+
     const status = runtime.getStatus();
     const pendingItem = getPendingFilePickerItem({
       currentSource: status.index.currentSource,
-      hasEntries: runtime.getEntries().length > 0,
+      hasEntries: sessionEntries.length > 0,
       isIndexing: status.index.isIndexing,
       isRestoringSnapshot: status.index.isRestoringSnapshot,
       query,
@@ -89,6 +105,32 @@ export async function showBetterGoToFile(
     return [pendingItem];
   };
 
+  const syncSessionEntries = (): void => {
+    if (hasLockedSessionEntries) {
+      return;
+    }
+
+    sessionEntries = runtime.getEntries();
+    hasLockedSessionEntries = shouldLockEntries();
+  };
+
+  const refreshItems = (query: string, delayMs = SEARCH_DEBOUNCE_MS): void => {
+    syncSessionEntries();
+    const pendingItems = getPendingItems(query);
+
+    if (pendingItems) {
+      quickPick.items = pendingItems;
+
+      if (!hasLockedSessionEntries) {
+        setSearching(true);
+      }
+
+      return;
+    }
+
+    scheduleSearch(query, delayMs);
+  };
+
   const renderItems = (query: string): void => {
     const pendingItems = getPendingItems(query);
 
@@ -97,15 +139,18 @@ export async function showBetterGoToFile(
       return;
     }
 
-    quickPick.items = toQuickPickItems(
-      runtime.getEntries(),
+    const config = runtime.getConfig();
+    const searchResult = searchFileItems(
+      sessionEntries,
       query,
       runtime.buildRankingContext(),
       resolveFileIcon,
       resolveGitignoredIcon,
-      runtime.getConfig(),
+      config,
       options,
     );
+
+    quickPick.items = searchResult.items.slice();
   };
 
   const scheduleSearch = (query: string, delayMs = SEARCH_DEBOUNCE_MS): void => {
@@ -151,7 +196,7 @@ export async function showBetterGoToFile(
       scheduleSearch(value);
     }),
     runtime.onDidChange(() => {
-      scheduleSearch(quickPick.value, 0);
+      refreshItems(quickPick.value, 0);
     }),
     quickPick.onDidAccept(async () => {
       const selectedItem = quickPick.selectedItems[0];
@@ -166,11 +211,19 @@ export async function showBetterGoToFile(
     }),
   );
 
-  scheduleSearch(quickPick.value, 0);
+  if (hasLockedSessionEntries) {
+    scheduleSearch(quickPick.value, 0);
+  } else {
+    refreshItems(quickPick.value, 0);
+  }
 
   void runtime.ready().then(
     () => {
-      scheduleSearch(quickPick.value, 0);
+      if (isDisposed) {
+        return;
+      }
+
+      refreshItems(quickPick.value, 0);
     },
     (error) => {
       showError(error);
@@ -206,4 +259,15 @@ export async function showBetterGoToFile(
 
     quickPick.dispose();
   });
+
+  function shouldLockEntries(): boolean {
+    const status = runtime.getStatus();
+
+    return shouldLockFilePickerEntries({
+      currentSource: status.index.currentSource,
+      hasEntries: sessionEntries.length > 0,
+      isIndexing: status.index.isIndexing,
+      isRestoringSnapshot: status.index.isRestoringSnapshot,
+    });
+  }
 }

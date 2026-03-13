@@ -119,6 +119,23 @@ export function createWorkspaceFolderIndexSnapshot(
   };
 }
 
+export function createIndexedRootFromFilePaths(
+  workspaceFolderUri: vscode.Uri,
+  relativePaths: readonly string[],
+): IndexedDirectoryNode {
+  if (!relativePaths.length) {
+    return createEmptyIndexedRoot(workspaceFolderUri);
+  }
+
+  const root = createMutableDirectoryNode("", "", workspaceFolderUri);
+
+  for (const relativePath of relativePaths) {
+    insertFilePath(root, relativePath);
+  }
+
+  return finalizeMutableDirectoryNode(root);
+}
+
 export function getIndexedDirectory(
   root: IndexedDirectoryNode,
   relativeDirectory: string,
@@ -167,6 +184,14 @@ export function collectIndexedFileEntries(
   return entries;
 }
 
+interface MutableDirectoryNode {
+  readonly name: string;
+  readonly relativePath: string;
+  readonly uri: vscode.Uri;
+  readonly directories: Map<string, MutableDirectoryNode>;
+  readonly files: Map<string, IndexedFileNode>;
+}
+
 function collectDirectoryEntries(
   snapshot: WorkspaceFolderIndexSnapshot,
   directory: IndexedDirectoryNode,
@@ -198,6 +223,77 @@ function collectDirectoryEntries(
   for (const child of directory.directories.values()) {
     collectDirectoryEntries(snapshot, child, nextPackageRoot, entries, isMultiRoot);
   }
+}
+
+function createMutableDirectoryNode(
+  name: string,
+  relativePath: string,
+  uri: vscode.Uri,
+): MutableDirectoryNode {
+  return {
+    name,
+    relativePath,
+    uri,
+    directories: new Map(),
+    files: new Map(),
+  };
+}
+
+function insertFilePath(root: MutableDirectoryNode, relativePath: string): void {
+  const segments = relativePath.split("/").filter(Boolean);
+
+  if (!segments.length) {
+    return;
+  }
+
+  const fileName = segments.pop();
+
+  if (!fileName) {
+    return;
+  }
+
+  let current = root;
+  let currentRelativePath = "";
+
+  for (const segment of segments) {
+    currentRelativePath = joinRelativePath(currentRelativePath, segment);
+    let child = current.directories.get(segment);
+
+    if (!child) {
+      child = createMutableDirectoryNode(
+        segment,
+        currentRelativePath,
+        vscode.Uri.joinPath(root.uri, ...currentRelativePath.split("/")),
+      );
+      current.directories.set(segment, child);
+    }
+
+    current = child;
+  }
+
+  current.files.set(
+    fileName,
+    createIndexedFileNode({
+      name: fileName,
+      relativePath,
+      uri: vscode.Uri.joinPath(root.uri, ...relativePath.split("/")),
+    }),
+  );
+}
+
+function finalizeMutableDirectoryNode(directory: MutableDirectoryNode): IndexedDirectoryNode {
+  return createIndexedDirectoryNode({
+    name: directory.name,
+    relativePath: directory.relativePath,
+    uri: directory.uri,
+    directories: new Map(
+      [...directory.directories.entries()].map(([name, child]) => [
+        name,
+        finalizeMutableDirectoryNode(child),
+      ]),
+    ),
+    files: directory.files,
+  });
 }
 
 function replaceIndexedDirectorySegments(

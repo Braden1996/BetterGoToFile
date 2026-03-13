@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { DEFAULT_BETTER_GO_TO_FILE_CONFIG } from "../src/config/schema";
 import { isSpecificQuery, shouldIncludeGitignoredFile } from "../src/search/gitignored-visibility";
 import {
+  collectRankedSearchCandidates,
   rankSearchCandidates,
   scoreSearchCandidates,
   type SearchCandidate,
@@ -106,6 +107,49 @@ describe("rankSearchCandidates", () => {
     expect(ranked[0]?.relativePath).toBe("src/search/cache.ts");
   });
 
+  test("uses frecency only when the query is empty", () => {
+    const candidates = [
+      createCandidate("src/recent/button.ts"),
+      createCandidate("src/current/button.ts"),
+    ];
+
+    const ranked = scoreSearchCandidates(candidates, "", {
+      activePath: "src/current/button.ts",
+      openPaths: new Set(["src/current/button.ts"]),
+      getFrecencyScore: (relativePath) => (relativePath === "src/recent/button.ts" ? 4 : 0),
+      getGitPrior: () => 8,
+      getGitTrackingState: () => "tracked",
+    });
+
+    expect(ranked[0]?.candidate.relativePath).toBe("src/recent/button.ts");
+    expect(ranked[0]?.breakdown.context.contributions.map(({ label }) => label)).toEqual([
+      "frecency",
+    ]);
+    expect(ranked[1]?.breakdown.context.contributions).toEqual([]);
+    expect(ranked[0]?.breakdown.gitPrior.total).toBe(0);
+  });
+
+  test("leans more on frecency for one-character queries than three-character queries", () => {
+    const candidates = [
+      createCandidate("src/recent/button.ts"),
+      createCandidate("src/current/button.ts"),
+    ];
+    const context = {
+      activePath: "src/current/button.ts",
+      openPaths: new Set(["src/current/button.ts"]),
+      getFrecencyScore: (relativePath: string) => (relativePath === "src/recent/button.ts" ? 4 : 0),
+      getGitPrior: (candidate: SearchCandidate) =>
+        candidate.relativePath === "src/current/button.ts" ? 4 : 0,
+      getGitTrackingState: () => "tracked" as const,
+    };
+
+    const oneCharacterRanked = rankSearchCandidates(candidates, "b", context);
+    const threeCharacterRanked = rankSearchCandidates(candidates, "but", context);
+
+    expect(oneCharacterRanked[0]?.relativePath).toBe("src/recent/button.ts");
+    expect(threeCharacterRanked[0]?.relativePath).toBe("src/current/button.ts");
+  });
+
   test("boosts files in the active package for ambiguous queries", () => {
     const candidates = [
       createCandidate(
@@ -164,6 +208,29 @@ describe("rankSearchCandidates", () => {
     expect(ranked[0]?.total).toBeGreaterThan(ranked[1]?.total ?? 0);
   });
 
+  test("collects matched candidates without changing default ranking order", () => {
+    const candidates = [
+      createCandidate("src/tracked/config.ts"),
+      createCandidate("src/core/config.ts"),
+      createCandidate("src/core/settings.ts"),
+    ];
+
+    const collected = collectRankedSearchCandidates(candidates, "config", {
+      getFrecencyScore: (relativePath) => (relativePath === "src/core/config.ts" ? 4 : 0),
+    });
+    const scored = scoreSearchCandidates(candidates, "config", {
+      getFrecencyScore: (relativePath) => (relativePath === "src/core/config.ts" ? 4 : 0),
+    });
+
+    expect(collected.matchedCandidates.map((candidate) => candidate.relativePath)).toEqual([
+      "src/tracked/config.ts",
+      "src/core/config.ts",
+    ]);
+    expect(collected.rankedCandidates.map((candidate) => candidate.relativePath)).toEqual(
+      scored.map(({ candidate }) => candidate.relativePath),
+    );
+  });
+
   test("captures score breakdown data for debug display", () => {
     const candidates = [createCandidate("src/search/config.ts")];
 
@@ -215,15 +282,19 @@ describe("gitignored visibility", () => {
     expect(shouldIncludeGitignoredFile("", "auto")).toBe(false);
     expect(shouldIncludeGitignoredFile("tmp", "auto")).toBe(false);
     expect(shouldIncludeGitignoredFile("test", "auto")).toBe(false);
+    expect(shouldIncludeGitignoredFile("mobile button", "auto")).toBe(false);
+    expect(shouldIncludeGitignoredFile("src/button.tsx", "auto")).toBe(false);
   });
 
-  test("auto shows ignored files for specific queries", () => {
+  test("auto only shows ignored files for exact basename queries with an extension", () => {
     expect(isSpecificQuery("config")).toBe(false);
-    expect(isSpecificQuery("longfilename12")).toBe(true);
+    expect(isSpecificQuery("longfilename12")).toBe(false);
     expect(isSpecificQuery(".env.local")).toBe(true);
-    expect(isSpecificQuery("foo bar")).toBe(true);
+    expect(isSpecificQuery("Button.swift")).toBe(true);
+    expect(isSpecificQuery("foo bar")).toBe(false);
     expect(shouldIncludeGitignoredFile("config", "auto")).toBe(false);
     expect(shouldIncludeGitignoredFile(".env.local", "auto")).toBe(true);
+    expect(shouldIncludeGitignoredFile("button.component.tsx", "auto")).toBe(true);
   });
 
   test("show and hide modes are explicit", () => {
@@ -234,27 +305,21 @@ describe("gitignored visibility", () => {
   test("underscore and hyphen no longer trigger path separator reveal", () => {
     expect(isSpecificQuery("btn-view")).toBe(false);
     expect(isSpecificQuery("my_file")).toBe(false);
-    expect(isSpecificQuery("src/btn")).toBe(true);
+    expect(isSpecificQuery("src/btn")).toBe(false);
     expect(isSpecificQuery("conf.ts")).toBe(true);
   });
 
-  test("specific query thresholds are configurable", () => {
-    expect(
-      isSpecificQuery("abcd", {
-        minQueryLength: 14,
-        minTokenCount: 3,
-        revealOnPathSeparator: false,
-      }),
-    ).toBe(false);
+  test("auto config shape no longer widens ignored-file visibility", () => {
+    expect(isSpecificQuery("abcd")).toBe(false);
     expect(
       shouldIncludeGitignoredFile("foo bar baz", {
         visibility: "auto",
         auto: {
-          minQueryLength: 14,
-          minTokenCount: 3,
-          revealOnPathSeparator: false,
+          minQueryLength: 1,
+          minTokenCount: 1,
+          revealOnPathSeparator: true,
         },
       }),
-    ).toBe(true);
+    ).toBe(false);
   });
 });
