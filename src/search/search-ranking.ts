@@ -2,7 +2,7 @@ import { DEFAULT_BETTER_GO_TO_FILE_CONFIG, type RankingConfig } from "../config/
 import type { GitTrackingState } from "../workspace";
 
 const AMBIGUITY_CANDIDATE_COUNT_CAP = 500;
-const GIT_PRIOR_SCORE_SCALE = 450;
+const GIT_PRIOR_SCORE_SCALE = 600;
 const SHORT_QUERY_FRECENCY_TRANSITION_LENGTH = 3;
 
 export interface SearchCandidate {
@@ -449,7 +449,7 @@ function scoreToken(
     return createTokenMatch(
       token,
       "basenameBoundary",
-      lexical.basenameBoundaryScore - basenameBoundaryIndex * 10 - candidate.basename.length,
+      lexical.basenameBoundaryScore - basenameBoundaryIndex * 6 - candidate.basename.length,
       basenamePathIndex + basenameBoundaryIndex,
       candidate.searchPath,
       "basename",

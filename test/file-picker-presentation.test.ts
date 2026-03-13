@@ -18,6 +18,7 @@ describe("file picker presentation", () => {
         hasEntries: false,
         isIndexing: true,
         isRestoringSnapshot: false,
+        isReadyForPicker: true,
         query: "",
       }),
     ).toEqual({
@@ -34,6 +35,7 @@ describe("file picker presentation", () => {
         hasEntries: false,
         isIndexing: true,
         isRestoringSnapshot: false,
+        isReadyForPicker: true,
         query: "src/search",
       }),
     ).toEqual({
@@ -50,6 +52,7 @@ describe("file picker presentation", () => {
         hasEntries: true,
         isIndexing: true,
         isRestoringSnapshot: false,
+        isReadyForPicker: true,
         query: "src",
       }),
     ).toBeUndefined();
@@ -60,9 +63,27 @@ describe("file picker presentation", () => {
         hasEntries: false,
         isIndexing: false,
         isRestoringSnapshot: false,
+        isReadyForPicker: true,
         query: "src",
       }),
     ).toBeUndefined();
+  });
+
+  test("keeps cached entries hidden until picker metadata is ready", () => {
+    expect(
+      getPendingFilePickerItem({
+        currentSource: "cache",
+        hasEntries: true,
+        isIndexing: true,
+        isRestoringSnapshot: false,
+        isReadyForPicker: false,
+        query: "button",
+      }),
+    ).toEqual({
+      label: "Searching workspace files...",
+      description: "Preparing tracked file metadata before showing cached results.",
+      alwaysShow: true,
+    });
   });
 
   test("keeps cached entries unlocked while the live refresh is still running", () => {

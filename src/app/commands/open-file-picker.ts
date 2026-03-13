@@ -1,6 +1,11 @@
 import * as vscode from "vscode";
 import { createGitignoredFileIconPath, loadFileIconResolver } from "../../icons";
-import { type FilePickItem, SearchRuntime, searchFileItems } from "../../search";
+import {
+  type FilePickItem,
+  SearchRuntime,
+  searchFileItems,
+  shouldIncludeFileEntry,
+} from "../../search";
 import type { FileEntry } from "../../workspace";
 import {
   formatFilePickerTitle,
@@ -79,22 +84,13 @@ export async function showBetterGoToFile(
   };
 
   const getPendingItems = (query: string): FilePickItem[] | undefined => {
-    if (!sessionEntries.length && !runtime.isReadyForPicker()) {
-      return [
-        {
-          label: query.trim() ? "Searching workspace files..." : "Loading workspace files...",
-          description: "Preparing tracked file metadata.",
-          alwaysShow: true,
-        },
-      ];
-    }
-
     const status = runtime.getStatus();
     const pendingItem = getPendingFilePickerItem({
       currentSource: status.index.currentSource,
       hasEntries: sessionEntries.length > 0,
       isIndexing: status.index.isIndexing,
       isRestoringSnapshot: status.index.isRestoringSnapshot,
+      isReadyForPicker: runtime.isReadyForPicker(),
       query,
     });
 
@@ -112,6 +108,24 @@ export async function showBetterGoToFile(
 
     sessionEntries = runtime.getEntries();
     hasLockedSessionEntries = shouldLockEntries();
+  };
+
+  const pruneIneligibleItems = (query: string): void => {
+    if (!runtime.isReadyForPicker() || !quickPick.items.length) {
+      return;
+    }
+
+    const config = runtime.getConfig();
+    const getGitTrackingState =
+      runtime.buildRankingContext().getGitTrackingState ?? (() => "unknown" as const);
+    const nextItems = quickPick.items.filter(
+      (item) =>
+        !item.entry || shouldIncludeFileEntry(item.entry, query, getGitTrackingState, config),
+    );
+
+    if (nextItems.length !== quickPick.items.length) {
+      quickPick.items = nextItems;
+    }
   };
 
   const refreshItems = (query: string, delayMs = SEARCH_DEBOUNCE_MS): void => {
@@ -171,6 +185,8 @@ export async function showBetterGoToFile(
 
     if (pendingItems) {
       quickPick.items = pendingItems;
+    } else {
+      pruneIneligibleItems(query);
     }
 
     searchTimer = setTimeout(() => {

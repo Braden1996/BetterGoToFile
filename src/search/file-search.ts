@@ -54,7 +54,7 @@ export function searchFileItems(
   const visibleEntries: FileEntry[] = [];
 
   for (const entry of entries) {
-    if (shouldIncludeEntry(entry, query, getGitTrackingState, config)) {
+    if (shouldIncludeFileEntry(entry, query, getGitTrackingState, config)) {
       visibleEntries.push(entry);
     }
   }
@@ -176,7 +176,7 @@ function createQuickPickItems(
   });
 }
 
-function shouldIncludeEntry(
+export function shouldIncludeFileEntry(
   entry: FileEntry,
   query: string,
   getGitTrackingState: (entry: FileEntry) => GitTrackingState,

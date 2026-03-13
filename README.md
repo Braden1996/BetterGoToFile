@@ -1,6 +1,44 @@
 # Better Go To File
 
-Better Go To File is a file picker with a deterministic ranking pipeline: lexical intent first, then editor context, then Git-derived reranking.
+VSCode is great, but the Go to File (`⌘ + P`) menu's naive fuzzy search starts to become a friction point inside large monorepos (too many generic named files etc).
+
+Better Go To File aims to reconstruct this Go to File menu but employs a more powerful scoring algorithm behind the scenes; one that considers [frecency](https://en.wikipedia.org/wiki/Frecency), Git author relationships to infer team-mates and their touched files, and a few other heuristics.
+
+As a bonus, when display search items, it truncates paths from the left but excludes the package name.
+
+## Keyboard Shortcuts
+
+Open `Preferences: Open Keyboard Shortcuts (JSON)` and add the bindings you want to `keybindings.json`.
+
+Replace the default `Cmd+P` picker with Better Go To File:
+
+```json
+[
+  {
+    "key": "cmd+p",
+    "command": "-workbench.action.quickOpen"
+  },
+  {
+    "key": "cmd+p",
+    "command": "betterGoToFile.open",
+    "when": "!inQuickOpen"
+  }
+]
+```
+
+Add another shortcut such as `Cmd+U` without changing `Cmd+P`:
+
+```json
+[
+  {
+    "key": "cmd+u",
+    "command": "betterGoToFile.open",
+    "when": "!inQuickOpen"
+  }
+]
+```
+
+If your `keybindings.json` already has entries, paste just the objects into the existing array.
 
 ## Search Algorithm
 
@@ -10,8 +48,8 @@ Better Go To File is a file picker with a deterministic ranking pipeline: lexica
 2. Infer package roots from directories that contain `package.json` or `project.json`.
 3. Normalize the query to lowercase tokens split on whitespace.
 4. Run a lexical pass. Every token must match each candidate somewhere, or the candidate is dropped.
-5. Add context scores from frecency, active file/package proximity, open tabs, and Git tracked state.
-6. Add Git priors from contributor history and current worktree activity.
+5. For empty input, rank on frecency alone. For non-empty input, add context scores from frecency, active file/package proximity, open tabs, and Git tracked state.
+6. Add Git priors from contributor history and current worktree activity, tapering them in over the first 3 query characters.
 7. Sort by total score, then lexical score, then path/name tiebreakers.
 
 ```mermaid
@@ -50,7 +88,8 @@ This means a file like `packages/runtimes/mobile-app/src/button.tsx` carries bot
 - Lowercase it.
 - Split on whitespace into tokens.
 - Use AND semantics: every token must match the candidate somewhere.
-- If the query is empty, skip the lexical pass and rank purely on context plus Git priors.
+- If the query is empty, skip the lexical pass and rank on frecency only.
+- For queries shorter than 3 non-space characters, taper non-frecency reranking signals in linearly until they reach full strength.
 
 ## Lexical Scoring
 
@@ -98,20 +137,27 @@ After lexical filtering, the scorer adds context contributions:
 
 - Frecency:
   - `round(log2(1 + frecencyScore) * multiplier)`
-  - uses query multipliers when the query is non-empty
-  - uses browse multipliers when the query is empty
+  - uses the browse multiplier at 0 characters
+  - ramps to the query multiplier over the first 3 non-space characters
 - Git tracked state:
   - tracked files get a boost
   - ignored and untracked files get penalties
+  - these effects ramp from `0` to full strength over the first 3 non-space characters
 - Open tabs:
   - open files get a boost
+  - this ramps from `0` to full strength over the first 3 non-space characters
 - Active file:
   - the exact active file gets a boost
+  - this ramps from `0` to full strength over the first 3 non-space characters
 - Same package:
   - files in the same package as the active file get a boost
+  - this ramps from `0` to full strength over the first 3 non-space characters
 - Directory proximity:
   - same directory gets a strong boost
   - otherwise shared leading directory segments get a smaller boost
+  - these boosts also ramp from `0` to full strength over the first 3 non-space characters
+
+For an empty query, only the frecency contribution remains active.
 
 The same-package boost is intentionally larger than a plain shared-prefix boost.
 
@@ -150,8 +196,9 @@ Tracked, ignored, and untracked state feed into the context pass directly. This 
 Git priors are a separate reranking term:
 
 - Raw Git prior = contributor prior + `1.6 * session overlay prior`
-- Final Git score = `log1p(rawGitPrior) * 450 * ambiguity`
+- Final Git score = `log1p(rawGitPrior) * 450 * ambiguity * queryStrength`
 - Ambiguity = `clamp(log1p(lexicalMatchCount) / log1p(500), 0, 1)`
+- `queryStrength = clamp(nonSpaceQueryLength / 3, 0, 1)`
 
 This means Git priors matter most when the lexical pass returns a broad ambiguous set.
 

@@ -248,7 +248,7 @@ describe("rankSearchCandidates", () => {
       score: 5_091,
     });
     expect(ranked[0]?.breakdown.context.contributions).toEqual([
-      { label: "frecency", score: 349 },
+      { label: "frecency", score: 460 },
       { label: "tracked", score: 80 },
       { label: "open", score: 120 },
       { label: "same-dir", score: 90 },
@@ -288,12 +288,15 @@ describe("gitignored visibility", () => {
 
   test("auto only shows ignored files for exact basename queries with an extension", () => {
     expect(isSpecificQuery("config")).toBe(false);
+    expect(isSpecificQuery("button")).toBe(false);
     expect(isSpecificQuery("longfilename12")).toBe(false);
     expect(isSpecificQuery(".env.local")).toBe(true);
     expect(isSpecificQuery("Button.swift")).toBe(true);
     expect(isSpecificQuery("foo bar")).toBe(false);
     expect(shouldIncludeGitignoredFile("config", "auto")).toBe(false);
+    expect(shouldIncludeGitignoredFile("button", "auto")).toBe(false);
     expect(shouldIncludeGitignoredFile(".env.local", "auto")).toBe(true);
+    expect(shouldIncludeGitignoredFile("Button.swift", "auto")).toBe(true);
     expect(shouldIncludeGitignoredFile("button.component.tsx", "auto")).toBe(true);
   });
 

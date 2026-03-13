@@ -3,10 +3,11 @@ interface FilePickerPendingState {
   readonly hasEntries: boolean;
   readonly isIndexing: boolean;
   readonly isRestoringSnapshot: boolean;
+  readonly isReadyForPicker: boolean;
   readonly query: string;
 }
 
-type FilePickerLockState = Omit<FilePickerPendingState, "query">;
+type FilePickerLockState = Omit<FilePickerPendingState, "query" | "isReadyForPicker">;
 
 export function formatFilePickerTitle(isSearching: boolean): string {
   return isSearching ? "Better Go To File - Searching..." : "Better Go To File";
@@ -15,6 +16,16 @@ export function formatFilePickerTitle(isSearching: boolean): string {
 export function getPendingFilePickerItem(
   state: FilePickerPendingState,
 ): { label: string; description: string; alwaysShow: true } | undefined {
+  if (!state.isReadyForPicker) {
+    return {
+      label: state.query.trim() ? "Searching workspace files..." : "Loading workspace files...",
+      description: state.hasEntries
+        ? "Preparing tracked file metadata before showing cached results."
+        : "Preparing tracked file metadata.",
+      alwaysShow: true,
+    };
+  }
+
   if (state.hasEntries) {
     return undefined;
   }
