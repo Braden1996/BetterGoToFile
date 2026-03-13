@@ -6,7 +6,7 @@
   "categories": [
     "Other"
   ],
-  "publisher": "local",
+  "publisher": "Braden",
   "main": "./out/extension.js",
   "scripts": {
     "fmt": "oxfmt",
@@ -33,6 +33,8 @@
     "oxfmt": "^0.36.0",
     "oxlint": "^1.51.0",
     "rulesync": "^7.15.2",
+    "semantic-release": "^25.0.3",
+    "semantic-release-vsce": "^6.1.0",
     "typescript": "^5.8.2"
   },
   "contributes": {
