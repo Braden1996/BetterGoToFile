@@ -22,15 +22,70 @@ export interface SearchContext<T extends SearchCandidate = SearchCandidate> {
   readonly getGitTrackingState?: (candidate: T) => GitTrackingState;
 }
 
+export type TokenMatchKind =
+  | "basenameExact"
+  | "pathExact"
+  | "pathPrefix"
+  | "pathBoundary"
+  | "pathSubstring"
+  | "basenamePrefix"
+  | "basenameBoundary"
+  | "basenameSubstring"
+  | "packageExact"
+  | "packagePrefix"
+  | "packageBoundary"
+  | "packageSubstring"
+  | "basenameFuzzy"
+  | "packageFuzzy"
+  | "pathFuzzy";
+
+interface TokenScoreBreakdown {
+  readonly token: string;
+  readonly kind: TokenMatchKind;
+  readonly score: number;
+}
+
+interface ScoreContribution {
+  readonly label: string;
+  readonly score: number;
+}
+
+export interface LexicalScoreBreakdown {
+  readonly total: number;
+  readonly tokenMatches: readonly TokenScoreBreakdown[];
+  readonly queryStructureBonus: number;
+  readonly pathLengthPenalty: number;
+}
+
+export interface ContextScoreBreakdown {
+  readonly total: number;
+  readonly contributions: readonly ScoreContribution[];
+}
+
+export interface GitPriorScoreBreakdown {
+  readonly total: number;
+  readonly rawPrior: number;
+  readonly ambiguity: number;
+}
+
+export interface SearchScoreBreakdown {
+  readonly lexical: LexicalScoreBreakdown;
+  readonly context: ContextScoreBreakdown;
+  readonly gitPrior: GitPriorScoreBreakdown;
+}
+
 interface ScoredSearchCandidate<T extends SearchCandidate = SearchCandidate> {
   readonly candidate: T;
   readonly lexical: number;
   readonly total: number;
+  readonly breakdown: SearchScoreBreakdown;
 }
 
 type TokenMatchRegion = "basename" | "package" | "path";
 
 interface TokenMatch {
+  readonly token: string;
+  readonly kind: TokenMatchKind;
   readonly score: number;
   readonly pathIndex: number;
   readonly segmentIndex: number;
@@ -69,16 +124,32 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
   ranking: RankingConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.ranking,
 ): ScoredSearchCandidate<T>[] {
   const normalizedQuery = query.trim().toLowerCase();
+  const activeDirectory = getDirectory(context.activePath);
 
   if (!normalizedQuery) {
     return candidates
-      .map((candidate) => ({
-        candidate,
-        lexical: 0,
-        total:
-          computeContextBoost(candidate, context, false, ranking) +
-          computeGitPriorBoost(candidate, context, 1),
-      }))
+      .map((candidate) => {
+        const lexicalBreakdown = createEmptyLexicalScoreBreakdown();
+        const contextBreakdown = computeContextBreakdown(
+          candidate,
+          context,
+          activeDirectory,
+          false,
+          ranking,
+        );
+        const gitPriorBreakdown = computeGitPriorBreakdown(candidate, context, 1);
+
+        return {
+          candidate,
+          lexical: 0,
+          total: contextBreakdown.total + gitPriorBreakdown.total,
+          breakdown: {
+            lexical: lexicalBreakdown,
+            context: contextBreakdown,
+            gitPrior: gitPriorBreakdown,
+          },
+        };
+      })
       .sort(
         (left, right) =>
           right.total - left.total || compareSearchCandidates(left.candidate, right.candidate),
@@ -87,24 +158,43 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
   }
 
   const tokens = normalizedQuery.split(/\s+/).filter(Boolean);
-  const lexicalMatches = candidates.flatMap((candidate) => {
-    const lexical = scoreCandidateLexical(candidate, tokens, ranking);
+  const lexicalMatches: { candidate: T; lexicalBreakdown: LexicalScoreBreakdown }[] = [];
 
-    if (lexical === null) {
-      return [];
+  for (const candidate of candidates) {
+    const lexicalBreakdown = scoreCandidateLexical(candidate, tokens, ranking);
+
+    if (lexicalBreakdown === null) {
+      continue;
     }
 
-    return [{ candidate, lexical }];
-  });
+    lexicalMatches.push({ candidate, lexicalBreakdown });
+  }
+
   const ambiguity = computeAmbiguity(lexicalMatches.length);
-  const ranked = lexicalMatches.map(({ candidate, lexical }) => ({
-    candidate,
-    lexical,
-    total:
-      lexical +
-      computeContextBoost(candidate, context, true, ranking) +
-      computeGitPriorBoost(candidate, context, ambiguity),
-  }));
+  const ranked: ScoredSearchCandidate<T>[] = [];
+
+  for (const { candidate, lexicalBreakdown } of lexicalMatches) {
+    const contextBreakdown = computeContextBreakdown(
+      candidate,
+      context,
+      activeDirectory,
+      true,
+      ranking,
+    );
+    const gitPriorBreakdown = computeGitPriorBreakdown(candidate, context, ambiguity);
+    const lexical = lexicalBreakdown.total;
+
+    ranked.push({
+      candidate,
+      lexical,
+      total: lexical + contextBreakdown.total + gitPriorBreakdown.total,
+      breakdown: {
+        lexical: lexicalBreakdown,
+        context: contextBreakdown,
+        gitPrior: gitPriorBreakdown,
+      },
+    });
+  }
 
   return ranked
     .sort(
@@ -124,20 +214,6 @@ function computeAmbiguity(candidateCount: number): number {
   return clamp(Math.log1p(candidateCount) / Math.log1p(AMBIGUITY_CANDIDATE_COUNT_CAP), 0, 1);
 }
 
-function computeGitPriorBoost<T extends SearchCandidate>(
-  candidate: T,
-  context: SearchContext<T>,
-  ambiguity: number,
-): number {
-  if (ambiguity <= 0) {
-    return 0;
-  }
-
-  const gitPrior = context.getGitPrior?.(candidate) ?? 0;
-
-  return gitPrior > 0 ? Math.log1p(gitPrior) * GIT_PRIOR_SCORE_SCALE * ambiguity : 0;
-}
-
 function compareSearchCandidates(left: SearchCandidate, right: SearchCandidate): number {
   return (
     left.basename.localeCompare(right.basename) ||
@@ -149,7 +225,7 @@ function scoreCandidateLexical(
   candidate: SearchCandidate,
   tokens: readonly string[],
   ranking: RankingConfig,
-): number | null {
+): LexicalScoreBreakdown | null {
   let total = 0;
   const matches: TokenMatch[] = [];
   const packageRootTarget = getPackageRootMatchTarget(candidate);
@@ -165,10 +241,22 @@ function scoreCandidateLexical(
     matches.push(tokenMatch);
   }
 
-  total += computeQueryStructureBonus(matches, ranking);
-  total -= candidate.relativePath.length * 0.08;
+  const queryStructureBonus = computeQueryStructureBonus(matches, ranking);
+  const pathLengthPenalty = candidate.relativePath.length * 0.08;
 
-  return total;
+  total += queryStructureBonus;
+  total -= pathLengthPenalty;
+
+  return {
+    total,
+    tokenMatches: matches.map(({ token, kind, score }) => ({
+      token,
+      kind,
+      score,
+    })),
+    queryStructureBonus,
+    pathLengthPenalty,
+  };
 }
 
 function scoreToken(
@@ -183,6 +271,8 @@ function scoreToken(
 
   if (candidate.searchBasename === token) {
     return createTokenMatch(
+      token,
+      "basenameExact",
       lexical.basenameExactScore - candidate.basename.length,
       basenamePathIndex,
       candidate.searchPath,
@@ -192,6 +282,8 @@ function scoreToken(
 
   if (candidate.searchPath === token) {
     return createTokenMatch(
+      token,
+      "pathExact",
       lexical.pathExactScore - candidate.relativePath.length,
       0,
       candidate.searchPath,
@@ -201,6 +293,8 @@ function scoreToken(
 
   if (expectsPath && candidate.searchPath.startsWith(token)) {
     return createTokenMatch(
+      token,
+      "pathPrefix",
       lexical.pathPrefixScore - candidate.relativePath.length,
       0,
       candidate.searchPath,
@@ -210,6 +304,8 @@ function scoreToken(
 
   if (candidate.searchBasename.startsWith(token)) {
     return createTokenMatch(
+      token,
+      "basenamePrefix",
       lexical.basenamePrefixScore - candidate.basename.length,
       basenamePathIndex,
       candidate.searchPath,
@@ -225,6 +321,8 @@ function scoreToken(
 
   if (basenameBoundaryIndex >= 0) {
     return createTokenMatch(
+      token,
+      "basenameBoundary",
       lexical.basenameBoundaryScore - basenameBoundaryIndex * 10 - candidate.basename.length,
       basenamePathIndex + basenameBoundaryIndex,
       candidate.searchPath,
@@ -236,6 +334,8 @@ function scoreToken(
 
   if (basenameIndex >= 0) {
     return createTokenMatch(
+      token,
+      "basenameSubstring",
       lexical.basenameSubstringScore - basenameIndex * 8 - candidate.basename.length,
       basenamePathIndex + basenameIndex,
       candidate.searchPath,
@@ -255,6 +355,8 @@ function scoreToken(
 
   if (pathBoundaryIndex >= 0) {
     return createTokenMatch(
+      token,
+      "pathBoundary",
       lexical.pathBoundaryScore - pathBoundaryIndex * 4 - candidate.relativePath.length * 0.2,
       pathBoundaryIndex,
       candidate.searchPath,
@@ -266,6 +368,8 @@ function scoreToken(
 
   if (pathIndex >= 0) {
     return createTokenMatch(
+      token,
+      "pathSubstring",
       lexical.pathSubstringScore - pathIndex * 3 - candidate.relativePath.length * 0.1,
       pathIndex,
       candidate.searchPath,
@@ -277,6 +381,8 @@ function scoreToken(
 
   if (basenameFuzzyScore !== null) {
     return createTokenMatch(
+      token,
+      "basenameFuzzy",
       lexical.basenameFuzzyBonus + basenameFuzzyScore.score,
       basenamePathIndex + basenameFuzzyScore.startIndex,
       candidate.searchPath,
@@ -296,6 +402,8 @@ function scoreToken(
 
   if (pathFuzzyScore !== null) {
     return createTokenMatch(
+      token,
+      "pathFuzzy",
       lexical.pathFuzzyBonus + pathFuzzyScore.score,
       pathFuzzyScore.startIndex,
       candidate.searchPath,
@@ -371,39 +479,54 @@ function scoreFuzzyToken(token: string, original: string, lower: string): FuzzyM
   };
 }
 
-function computeContextBoost<T extends SearchCandidate>(
+function computeContextBreakdown<T extends SearchCandidate>(
   candidate: T,
   context: SearchContext<T>,
+  activeDirectory: string | undefined,
   hasQuery: boolean,
   ranking: RankingConfig,
-): number {
+): ContextScoreBreakdown {
   const { context: config } = ranking;
-  let boost = 0;
+  const contributions: ScoreContribution[] = [];
   const frecencyScore = context.getFrecencyScore?.(candidate.relativePath) ?? 0;
+  const addContribution = (label: string, score: number): void => {
+    if (score !== 0) {
+      contributions.push({ label, score });
+    }
+  };
 
   if (frecencyScore > 0) {
-    boost += Math.round(
-      Math.log2(1 + frecencyScore) *
-        (hasQuery ? config.frecencyQueryMultiplier : config.frecencyBrowseMultiplier),
+    addContribution(
+      "frecency",
+      Math.round(
+        Math.log2(1 + frecencyScore) *
+          (hasQuery ? config.frecencyQueryMultiplier : config.frecencyBrowseMultiplier),
+      ),
     );
   }
 
   const gitTrackingState = context.getGitTrackingState?.(candidate);
 
   if (gitTrackingState === "tracked") {
-    boost += hasQuery ? config.trackedQueryBoost : config.trackedBrowseBoost;
+    addContribution("tracked", hasQuery ? config.trackedQueryBoost : config.trackedBrowseBoost);
   } else if (gitTrackingState === "ignored") {
-    boost -= hasQuery ? config.ignoredQueryPenalty : config.ignoredBrowsePenalty;
+    addContribution(
+      "ignored",
+      -(hasQuery ? config.ignoredQueryPenalty : config.ignoredBrowsePenalty),
+    );
   } else if (gitTrackingState === "untracked") {
-    boost -= hasQuery ? config.untrackedQueryPenalty : config.untrackedBrowsePenalty;
+    addContribution(
+      "untracked",
+      -(hasQuery ? config.untrackedQueryPenalty : config.untrackedBrowsePenalty),
+    );
   }
 
   if (context.openPaths?.has(candidate.relativePath)) {
-    boost += hasQuery ? config.openQueryBoost : config.openBrowseBoost;
+    addContribution("open", hasQuery ? config.openQueryBoost : config.openBrowseBoost);
   }
 
   if (context.activePath === candidate.relativePath) {
-    boost += hasQuery ? config.activeQueryBoost : config.activeBrowseBoost;
+    addContribution("active", hasQuery ? config.activeQueryBoost : config.activeBrowseBoost);
   }
 
   if (
@@ -412,31 +535,37 @@ function computeContextBoost<T extends SearchCandidate>(
     context.activePackageRoot === candidate.packageRoot &&
     candidate.relativePath !== context.activePath
   ) {
-    boost += computeSamePackageBoost(config, hasQuery);
+    addContribution("same-pkg", computeSamePackageBoost(config, hasQuery));
   }
 
-  const activeDirectory = getDirectory(context.activePath);
-
   if (!activeDirectory || candidate.relativePath === context.activePath) {
-    return boost;
+    return finalizeContextScoreBreakdown(contributions);
   }
 
   if (candidate.directory === activeDirectory) {
-    boost += hasQuery ? config.sameDirectoryQueryBoost : config.sameDirectoryBrowseBoost;
-    return boost;
+    addContribution(
+      "same-dir",
+      hasQuery ? config.sameDirectoryQueryBoost : config.sameDirectoryBrowseBoost,
+    );
+    return finalizeContextScoreBreakdown(contributions);
   }
 
   const sharedPrefixSegments = countSharedPrefixSegments(candidate.directory, activeDirectory);
 
   if (sharedPrefixSegments >= 2) {
-    boost +=
+    addContribution(
+      `shared-prefix x${sharedPrefixSegments}`,
       sharedPrefixSegments *
-      (hasQuery ? config.sharedPrefixSegmentQueryBoost : config.sharedPrefixSegmentBrowseBoost);
+        (hasQuery ? config.sharedPrefixSegmentQueryBoost : config.sharedPrefixSegmentBrowseBoost),
+    );
   } else if (sharedPrefixSegments === 1) {
-    boost += hasQuery ? config.sharedPrefixSingleQueryBoost : config.sharedPrefixSingleBrowseBoost;
+    addContribution(
+      "shared-prefix",
+      hasQuery ? config.sharedPrefixSingleQueryBoost : config.sharedPrefixSingleBrowseBoost,
+    );
   }
 
-  return boost;
+  return finalizeContextScoreBreakdown(contributions);
 }
 
 function getDirectory(relativePath?: string): string | undefined {
@@ -507,6 +636,8 @@ function scorePackageRootToken(
 
   if (target.searchBasename === token) {
     return createTokenMatch(
+      token,
+      "packageExact",
       interpolateScore(lexical.pathExactScore, lexical.basenameExactScore, 0.72) -
         target.originalBasename.length,
       target.pathIndex,
@@ -518,6 +649,8 @@ function scorePackageRootToken(
 
   if (target.searchBasename.startsWith(token)) {
     return createTokenMatch(
+      token,
+      "packagePrefix",
       interpolateScore(lexical.pathPrefixScore, lexical.basenamePrefixScore, 0.72) -
         target.originalBasename.length,
       target.pathIndex,
@@ -531,6 +664,8 @@ function scorePackageRootToken(
 
   if (boundaryIndex >= 0) {
     return createTokenMatch(
+      token,
+      "packageBoundary",
       interpolateScore(lexical.pathBoundaryScore, lexical.basenameBoundaryScore, 0.68) -
         boundaryIndex * 9 -
         target.originalBasename.length,
@@ -545,6 +680,8 @@ function scorePackageRootToken(
 
   if (substringIndex >= 0) {
     return createTokenMatch(
+      token,
+      "packageSubstring",
       interpolateScore(lexical.pathSubstringScore, lexical.basenameSubstringScore, 0.62) -
         substringIndex * 7 -
         target.originalBasename.length,
@@ -570,6 +707,8 @@ function scorePackageRootFuzzyToken(
   }
 
   return createTokenMatch(
+    token,
+    "packageFuzzy",
     interpolateScore(ranking.lexical.pathFuzzyBonus, ranking.lexical.basenameFuzzyBonus, 0.45) +
       fuzzyMatch.score,
     target.pathIndex + fuzzyMatch.startIndex,
@@ -616,6 +755,8 @@ function computeQueryStructureBonus(
 }
 
 function createTokenMatch(
+  token: string,
+  kind: TokenMatchKind,
   score: number,
   pathIndex: number,
   path: string,
@@ -623,10 +764,30 @@ function createTokenMatch(
   segmentIndex = countSegmentIndexAtPathIndex(path, pathIndex),
 ): TokenMatch {
   return {
+    token,
+    kind,
     score,
     pathIndex,
     segmentIndex,
     region,
+  };
+}
+
+function createEmptyLexicalScoreBreakdown(): LexicalScoreBreakdown {
+  return {
+    total: 0,
+    tokenMatches: [],
+    queryStructureBonus: 0,
+    pathLengthPenalty: 0,
+  };
+}
+
+function finalizeContextScoreBreakdown(
+  contributions: readonly ScoreContribution[],
+): ContextScoreBreakdown {
+  return {
+    total: contributions.reduce((total, contribution) => total + contribution.score, 0),
+    contributions,
   };
 }
 
@@ -677,4 +838,26 @@ function isCamelCaseBoundary(previous: string, current: string): boolean {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function computeGitPriorBreakdown<T extends SearchCandidate>(
+  candidate: T,
+  context: SearchContext<T>,
+  ambiguity: number,
+): GitPriorScoreBreakdown {
+  if (ambiguity <= 0) {
+    return {
+      total: 0,
+      rawPrior: 0,
+      ambiguity: 0,
+    };
+  }
+
+  const rawPrior = context.getGitPrior?.(candidate) ?? 0;
+
+  return {
+    total: rawPrior > 0 ? Math.log1p(rawPrior) * GIT_PRIOR_SCORE_SCALE * ambiguity : 0,
+    rawPrior,
+    ambiguity,
+  };
 }

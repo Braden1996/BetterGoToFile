@@ -4,6 +4,12 @@ import {
   type BetterGoToFileConfig,
   type GitignoredVisibility,
 } from "./schema";
+import {
+  hasScoringPresetOverride,
+  isScoringPresetId,
+  parseScoringPresetOverrideInput,
+  resolveScoringPresetValues,
+} from "./scoring-presets";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -48,385 +54,49 @@ export class BetterGoToFileConfigStore implements vscode.Disposable {
 function readBetterGoToFileConfig(): BetterGoToFileConfig {
   const configuration = vscode.workspace.getConfiguration(BETTER_GO_TO_FILE_CONFIGURATION_SECTION);
   const defaults = DEFAULT_BETTER_GO_TO_FILE_CONFIG;
+  const scoringPreset = readScoringPresetId(
+    configuration,
+    "scoring.preset",
+    defaults.scoring.preset,
+  );
+  const customPreset = readScoringPresetOverride(configuration, "scoring.customPreset");
+  const scoringValues = resolveScoringPresetValues(scoringPreset, customPreset);
 
   return {
-    picker: {
-      showScores: readBoolean(configuration, "picker.showScores", defaults.picker.showScores),
-      maxVisibleResults: readInteger(
-        configuration,
-        "picker.maxVisibleResults",
-        defaults.picker.maxVisibleResults,
-        1,
-      ),
-      description: {
-        pathTailSegments: readInteger(
-          configuration,
-          "picker.description.pathTailSegments",
-          defaults.picker.description.pathTailSegments,
-          1,
-        ),
-        collapsedTailSegments: readInteger(
-          configuration,
-          "picker.description.collapsedTailSegments",
-          defaults.picker.description.collapsedTailSegments,
-          1,
-        ),
-        queryContextRadius: readInteger(
-          configuration,
-          "picker.description.queryContextRadius",
-          defaults.picker.description.queryContextRadius,
-          0,
-        ),
-        maxRowWidthUnits: readNumber(
-          configuration,
-          "picker.description.maxRowWidthUnits",
-          defaults.picker.description.maxRowWidthUnits,
-          1,
-        ),
-        labelPaddingWidthUnits: readNumber(
-          configuration,
-          "picker.description.labelPaddingWidthUnits",
-          defaults.picker.description.labelPaddingWidthUnits,
-          0,
-        ),
-        minDescriptionWidthUnits: readNumber(
-          configuration,
-          "picker.description.minDescriptionWidthUnits",
-          defaults.picker.description.minDescriptionWidthUnits,
-          1,
-        ),
-      },
-    },
+    picker: defaults.picker,
     gitignored: {
       visibility: readGitignoredVisibility(
         configuration,
         "gitignored.visibility",
         defaults.gitignored.visibility,
       ),
-      auto: {
-        minQueryLength: readInteger(
-          configuration,
-          "gitignored.auto.minQueryLength",
-          defaults.gitignored.auto.minQueryLength,
-          1,
-        ),
-        minTokenCount: readInteger(
-          configuration,
-          "gitignored.auto.minTokenCount",
-          defaults.gitignored.auto.minTokenCount,
-          1,
-        ),
-        revealOnPathSeparator: readBoolean(
-          configuration,
-          "gitignored.auto.revealOnPathSeparator",
-          defaults.gitignored.auto.revealOnPathSeparator,
-        ),
-      },
+      auto: defaults.gitignored.auto,
     },
     workspaceIndex: {
-      fileGlob: readNonEmptyString(
-        configuration,
-        "workspaceIndex.fileGlob",
-        defaults.workspaceIndex.fileGlob,
-      ),
+      fileGlob: defaults.workspaceIndex.fileGlob,
       excludedDirectories: readStringArray(
         configuration,
         "workspaceIndex.excludedDirectories",
         defaults.workspaceIndex.excludedDirectories,
       ),
-      maxFileCount: readInteger(
-        configuration,
-        "workspaceIndex.maxFileCount",
-        defaults.workspaceIndex.maxFileCount,
-        1,
-      ),
+      maxFileCount: defaults.workspaceIndex.maxFileCount,
+    },
+    scoring: {
+      preset: scoringPreset,
+      customPreset,
     },
     frecency: {
-      halfLifeMs:
-        readNumber(
-          configuration,
-          "frecency.halfLifeDays",
-          defaults.frecency.halfLifeMs / DAY_MS,
-          1,
-        ) * DAY_MS,
-      flushDelayMs: readInteger(
-        configuration,
-        "frecency.flushDelayMs",
-        defaults.frecency.flushDelayMs,
-        0,
-      ),
-      maxRecords: readInteger(
-        configuration,
-        "frecency.maxRecords",
-        defaults.frecency.maxRecords,
-        1,
-      ),
+      halfLifeMs: scoringValues.frecencyHalfLifeDays * DAY_MS,
+      flushDelayMs: defaults.frecency.flushDelayMs,
+      maxRecords: defaults.frecency.maxRecords,
     },
-    visits: {
-      implicitOpenWeight: readNumber(
-        configuration,
-        "visits.implicitOpenWeight",
-        defaults.visits.implicitOpenWeight,
-        0,
-      ),
-      explicitOpenWeight: readNumber(
-        configuration,
-        "visits.explicitOpenWeight",
-        defaults.visits.explicitOpenWeight,
-        0,
-      ),
-      editorDwellMs: readInteger(
-        configuration,
-        "visits.editorDwellMs",
-        defaults.visits.editorDwellMs,
-        0,
-      ),
-      duplicateVisitWindowMs: readInteger(
-        configuration,
-        "visits.duplicateVisitWindowMs",
-        defaults.visits.duplicateVisitWindowMs,
-        0,
-      ),
-    },
+    visits: scoringValues.visits,
     git: {
-      refreshDebounceMs: readInteger(
-        configuration,
-        "git.refreshDebounceMs",
-        defaults.git.refreshDebounceMs,
-        0,
-      ),
+      refreshDebounceMs: defaults.git.refreshDebounceMs,
     },
-    ranking: {
-      lexical: {
-        basenameExactScore: readNumber(
-          configuration,
-          "ranking.lexical.basenameExactScore",
-          defaults.ranking.lexical.basenameExactScore,
-          0,
-        ),
-        pathExactScore: readNumber(
-          configuration,
-          "ranking.lexical.pathExactScore",
-          defaults.ranking.lexical.pathExactScore,
-          0,
-        ),
-        basenamePrefixScore: readNumber(
-          configuration,
-          "ranking.lexical.basenamePrefixScore",
-          defaults.ranking.lexical.basenamePrefixScore,
-          0,
-        ),
-        pathPrefixScore: readNumber(
-          configuration,
-          "ranking.lexical.pathPrefixScore",
-          defaults.ranking.lexical.pathPrefixScore,
-          0,
-        ),
-        basenameBoundaryScore: readNumber(
-          configuration,
-          "ranking.lexical.basenameBoundaryScore",
-          defaults.ranking.lexical.basenameBoundaryScore,
-          0,
-        ),
-        pathBoundaryScore: readNumber(
-          configuration,
-          "ranking.lexical.pathBoundaryScore",
-          defaults.ranking.lexical.pathBoundaryScore,
-          0,
-        ),
-        basenameSubstringScore: readNumber(
-          configuration,
-          "ranking.lexical.basenameSubstringScore",
-          defaults.ranking.lexical.basenameSubstringScore,
-          0,
-        ),
-        pathSubstringScore: readNumber(
-          configuration,
-          "ranking.lexical.pathSubstringScore",
-          defaults.ranking.lexical.pathSubstringScore,
-          0,
-        ),
-        basenameFuzzyBonus: readNumber(
-          configuration,
-          "ranking.lexical.basenameFuzzyBonus",
-          defaults.ranking.lexical.basenameFuzzyBonus,
-          0,
-        ),
-        pathFuzzyBonus: readNumber(
-          configuration,
-          "ranking.lexical.pathFuzzyBonus",
-          defaults.ranking.lexical.pathFuzzyBonus,
-          0,
-        ),
-      },
-      context: {
-        frecencyQueryMultiplier: readNumber(
-          configuration,
-          "ranking.context.frecencyQueryMultiplier",
-          defaults.ranking.context.frecencyQueryMultiplier,
-          0,
-        ),
-        frecencyBrowseMultiplier: readNumber(
-          configuration,
-          "ranking.context.frecencyBrowseMultiplier",
-          defaults.ranking.context.frecencyBrowseMultiplier,
-          0,
-        ),
-        trackedQueryBoost: readNumber(
-          configuration,
-          "ranking.context.trackedQueryBoost",
-          defaults.ranking.context.trackedQueryBoost,
-          0,
-        ),
-        trackedBrowseBoost: readNumber(
-          configuration,
-          "ranking.context.trackedBrowseBoost",
-          defaults.ranking.context.trackedBrowseBoost,
-          0,
-        ),
-        ignoredQueryPenalty: readNumber(
-          configuration,
-          "ranking.context.ignoredQueryPenalty",
-          defaults.ranking.context.ignoredQueryPenalty,
-          0,
-        ),
-        ignoredBrowsePenalty: readNumber(
-          configuration,
-          "ranking.context.ignoredBrowsePenalty",
-          defaults.ranking.context.ignoredBrowsePenalty,
-          0,
-        ),
-        untrackedQueryPenalty: readNumber(
-          configuration,
-          "ranking.context.untrackedQueryPenalty",
-          defaults.ranking.context.untrackedQueryPenalty,
-          0,
-        ),
-        untrackedBrowsePenalty: readNumber(
-          configuration,
-          "ranking.context.untrackedBrowsePenalty",
-          defaults.ranking.context.untrackedBrowsePenalty,
-          0,
-        ),
-        openQueryBoost: readNumber(
-          configuration,
-          "ranking.context.openQueryBoost",
-          defaults.ranking.context.openQueryBoost,
-          0,
-        ),
-        openBrowseBoost: readNumber(
-          configuration,
-          "ranking.context.openBrowseBoost",
-          defaults.ranking.context.openBrowseBoost,
-          0,
-        ),
-        activeQueryBoost: readNumber(
-          configuration,
-          "ranking.context.activeQueryBoost",
-          defaults.ranking.context.activeQueryBoost,
-          0,
-        ),
-        activeBrowseBoost: readNumber(
-          configuration,
-          "ranking.context.activeBrowseBoost",
-          defaults.ranking.context.activeBrowseBoost,
-          0,
-        ),
-        sameDirectoryQueryBoost: readNumber(
-          configuration,
-          "ranking.context.sameDirectoryQueryBoost",
-          defaults.ranking.context.sameDirectoryQueryBoost,
-          0,
-        ),
-        sameDirectoryBrowseBoost: readNumber(
-          configuration,
-          "ranking.context.sameDirectoryBrowseBoost",
-          defaults.ranking.context.sameDirectoryBrowseBoost,
-          0,
-        ),
-        sharedPrefixSegmentQueryBoost: readNumber(
-          configuration,
-          "ranking.context.sharedPrefixSegmentQueryBoost",
-          defaults.ranking.context.sharedPrefixSegmentQueryBoost,
-          0,
-        ),
-        sharedPrefixSegmentBrowseBoost: readNumber(
-          configuration,
-          "ranking.context.sharedPrefixSegmentBrowseBoost",
-          defaults.ranking.context.sharedPrefixSegmentBrowseBoost,
-          0,
-        ),
-        sharedPrefixSingleQueryBoost: readNumber(
-          configuration,
-          "ranking.context.sharedPrefixSingleQueryBoost",
-          defaults.ranking.context.sharedPrefixSingleQueryBoost,
-          0,
-        ),
-        sharedPrefixSingleBrowseBoost: readNumber(
-          configuration,
-          "ranking.context.sharedPrefixSingleBrowseBoost",
-          defaults.ranking.context.sharedPrefixSingleBrowseBoost,
-          0,
-        ),
-      },
-    },
-    diagnostics: {
-      iconSampleCount: readInteger(
-        configuration,
-        "diagnostics.iconSampleCount",
-        defaults.diagnostics.iconSampleCount,
-        1,
-      ),
-    },
+    ranking: scoringValues.ranking,
+    diagnostics: defaults.diagnostics,
   };
-}
-
-function readBoolean(
-  configuration: vscode.WorkspaceConfiguration,
-  key: string,
-  fallback: boolean,
-): boolean {
-  return configuration.get<boolean>(key, fallback);
-}
-
-function readNonEmptyString(
-  configuration: vscode.WorkspaceConfiguration,
-  key: string,
-  fallback: string,
-): string {
-  const value = configuration.get<string>(key, fallback)?.trim();
-
-  return value || fallback;
-}
-
-function readInteger(
-  configuration: vscode.WorkspaceConfiguration,
-  key: string,
-  fallback: number,
-  minimum: number,
-): number {
-  const value = configuration.get<number>(key, fallback);
-
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  return Math.max(minimum, Math.round(value));
-}
-
-function readNumber(
-  configuration: vscode.WorkspaceConfiguration,
-  key: string,
-  fallback: number,
-  minimum: number,
-): number {
-  const value = configuration.get<number>(key, fallback);
-
-  if (typeof value !== "number" || !Number.isFinite(value)) {
-    return fallback;
-  }
-
-  return Math.max(minimum, value);
 }
 
 function readStringArray(
@@ -455,6 +125,27 @@ function readStringArray(
   }
 
   return normalized.size ? [...normalized] : fallback;
+}
+
+function readScoringPresetId(
+  configuration: vscode.WorkspaceConfiguration,
+  key: string,
+  fallback: BetterGoToFileConfig["scoring"]["preset"],
+): BetterGoToFileConfig["scoring"]["preset"] {
+  const value = configuration.get<string>(key, fallback);
+
+  return typeof value === "string" && isScoringPresetId(value) ? value : fallback;
+}
+
+function readScoringPresetOverride(
+  configuration: vscode.WorkspaceConfiguration,
+  key: string,
+): BetterGoToFileConfig["scoring"]["customPreset"] {
+  return parseScoringPresetOverrideInput(configuration.get<unknown>(key));
+}
+
+export function isUsingCustomScoring(config: BetterGoToFileConfig): boolean {
+  return hasScoringPresetOverride(config.scoring.customPreset);
 }
 
 function readGitignoredVisibility(

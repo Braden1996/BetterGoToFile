@@ -5,6 +5,7 @@ declare module "bun:test" {
   interface Matchers<T> {
     toBe(expected: T): void;
     toBeCloseTo(expected: number, precision?: number): void;
+    toContain(expected: string): void;
     toBeDefined(): void;
     toBeGreaterThan(expected: number): void;
     toBeLessThan(expected: number): void;

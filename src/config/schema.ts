@@ -1,3 +1,11 @@
+import {
+  DEFAULT_SCORING_CUSTOM_PRESET,
+  DEFAULT_SCORING_PRESET_ID,
+  getScoringPresetValues,
+  type ScoringPresetId,
+  type ScoringPresetOverride,
+} from "./scoring-presets";
+
 export type GitignoredVisibility = "show" | "auto" | "hide";
 
 export interface PickerDescriptionConfig {
@@ -92,10 +100,16 @@ export interface DiagnosticsConfig {
   readonly iconSampleCount: number;
 }
 
+export interface ScoringSettingsConfig {
+  readonly preset: ScoringPresetId;
+  readonly customPreset: ScoringPresetOverride;
+}
+
 export interface BetterGoToFileConfig {
   readonly picker: PickerConfig;
   readonly gitignored: GitignoredConfig;
   readonly workspaceIndex: WorkspaceIndexConfig;
+  readonly scoring: ScoringSettingsConfig;
   readonly frecency: FrecencyConfig;
   readonly visits: VisitTrackingConfig;
   readonly git: GitConfig;
@@ -104,6 +118,7 @@ export interface BetterGoToFileConfig {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_SCORING_VALUES = getScoringPresetValues(DEFAULT_SCORING_PRESET_ID);
 
 export const DEFAULT_BETTER_GO_TO_FILE_CONFIG: BetterGoToFileConfig = {
   picker: {
@@ -138,56 +153,22 @@ export const DEFAULT_BETTER_GO_TO_FILE_CONFIG: BetterGoToFileConfig = {
       ".turbo",
       "coverage",
     ],
-    maxFileCount: 50000,
+    maxFileCount: 0,
+  },
+  scoring: {
+    preset: DEFAULT_SCORING_PRESET_ID,
+    customPreset: DEFAULT_SCORING_CUSTOM_PRESET,
   },
   frecency: {
-    halfLifeMs: 14 * DAY_MS,
+    halfLifeMs: DEFAULT_SCORING_VALUES.frecencyHalfLifeDays * DAY_MS,
     flushDelayMs: 1500,
     maxRecords: 20000,
   },
-  visits: {
-    implicitOpenWeight: 1,
-    explicitOpenWeight: 2,
-    editorDwellMs: 900,
-    duplicateVisitWindowMs: 15000,
-  },
+  visits: DEFAULT_SCORING_VALUES.visits,
   git: {
     refreshDebounceMs: 500,
   },
-  ranking: {
-    lexical: {
-      basenameExactScore: 5600,
-      pathExactScore: 5200,
-      basenamePrefixScore: 4700,
-      pathPrefixScore: 4300,
-      basenameBoundaryScore: 3900,
-      pathBoundaryScore: 3200,
-      basenameSubstringScore: 3000,
-      pathSubstringScore: 2500,
-      basenameFuzzyBonus: 1800,
-      pathFuzzyBonus: 900,
-    },
-    context: {
-      frecencyQueryMultiplier: 140,
-      frecencyBrowseMultiplier: 240,
-      trackedQueryBoost: 120,
-      trackedBrowseBoost: 240,
-      ignoredQueryPenalty: 1800,
-      ignoredBrowsePenalty: 3000,
-      untrackedQueryPenalty: 1100,
-      untrackedBrowsePenalty: 2200,
-      openQueryBoost: 170,
-      openBrowseBoost: 320,
-      activeQueryBoost: 120,
-      activeBrowseBoost: 260,
-      sameDirectoryQueryBoost: 110,
-      sameDirectoryBrowseBoost: 210,
-      sharedPrefixSegmentQueryBoost: 40,
-      sharedPrefixSegmentBrowseBoost: 70,
-      sharedPrefixSingleQueryBoost: 24,
-      sharedPrefixSingleBrowseBoost: 44,
-    },
-  },
+  ranking: DEFAULT_SCORING_VALUES.ranking,
   diagnostics: {
     iconSampleCount: 6,
   },

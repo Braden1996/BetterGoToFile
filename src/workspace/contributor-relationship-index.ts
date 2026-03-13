@@ -21,12 +21,11 @@ import { collectPackageRootDirectories } from "./package-root";
 import { normalizePath } from "./workspace-path";
 
 const COMMIT_SEPARATOR = "\u001e";
-const CACHE_VERSION = 3;
+const CACHE_VERSION = 4;
 const CONTRIBUTOR_HISTORY_WINDOW_DAYS = 365;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const EMPTY_TOUCHED_PATHS: readonly string[] = [];
 const FIELD_SEPARATOR = "\u001f";
-const MAX_RELATIONSHIPS = 12;
 const MAX_TOP_CONTRIBUTORS = 8;
 
 export type WorkspaceContributorRelationshipStatus =
@@ -50,6 +49,7 @@ export interface WorkspaceContributorRelationshipSnapshot {
   readonly currentContributorFileSlowWeight: number;
   readonly trackedFileCount: number;
   readonly contributorCount: number;
+  readonly contributors: readonly ContributorSummary[];
   readonly relationships: readonly ContributorRelationship[];
   readonly topContributors: readonly ContributorSummary[];
 }
@@ -142,6 +142,16 @@ export class ContributorRelationshipIndex implements vscode.Disposable {
 
   getSearchState(workspaceFolderPath: string): WorkspaceContributorSearchState | undefined {
     return this.states.get(workspaceFolderPath)?.searchState;
+  }
+
+  getLoadedSnapshots(): readonly WorkspaceContributorRelationshipSnapshot[] {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+
+    return folders.flatMap((folder) => {
+      const snapshot = this.states.get(folder.uri.fsPath)?.snapshot;
+
+      return snapshot ? [snapshot] : [];
+    });
   }
 
   dispose(): void {
@@ -287,6 +297,7 @@ async function loadWorkspaceContributorRelationshipState(
       configuredContributor,
       trackedFileCount: trackedPaths.size,
       topContributors,
+      contributors: graph.contributors,
     };
     const state: WorkspaceContributorRelationshipState = {
       snapshot,
@@ -315,6 +326,7 @@ async function loadWorkspaceContributorRelationshipState(
       configuredContributor,
       trackedFileCount: trackedPaths.size,
       contributorCount: graph.contributors.length,
+      contributors: graph.contributors,
       topContributors,
     };
     const state: WorkspaceContributorRelationshipState = {
@@ -337,7 +349,7 @@ async function loadWorkspaceContributorRelationshipState(
     graph,
     currentContributorSummary.contributor.key,
     {
-      limit: MAX_RELATIONSHIPS,
+      limit: graph.contributors.length,
     },
   );
 
@@ -365,6 +377,7 @@ async function loadWorkspaceContributorRelationshipState(
     currentContributorFileSlowWeight: currentContributorSummary.fileSlowWeight,
     trackedFileCount: trackedPaths.size,
     contributorCount: graph.contributors.length,
+    contributors: graph.contributors,
     relationships,
     topContributors,
   };
@@ -684,6 +697,7 @@ function createEmptySnapshot(
     currentContributorFileSlowWeight: 0,
     trackedFileCount: 0,
     contributorCount: 0,
+    contributors: [],
     relationships: [],
     topContributors: [],
   };

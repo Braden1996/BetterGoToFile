@@ -14,6 +14,9 @@
     "lint": "oxlint",
     "lint:fix": "oxlint --fix",
     "knip": "knip",
+    "score": "bun run scripts/scoring-cli.ts",
+    "score:search": "bun run scripts/scoring-cli.ts search",
+    "score:explain": "bun run scripts/scoring-cli.ts explain",
     "compile": "bunx tsc -b",
     "watch": "bunx tsc -b -w",
     "rulesync:generate": "bunx rulesync generate",
@@ -23,6 +26,7 @@
     "vscode:prepublish": "bun run compile"
   },
   "devDependencies": {
+    "@stricli/core": "^1.2.6",
     "@types/node": "^22.13.10",
     "@types/vscode": "^1.97.0",
     "knip": "^5.86.0",
@@ -38,64 +42,21 @@
         "title": "Better Go To File: Open"
       },
       {
-        "command": "betterGoToFile.inspectIcons",
-        "title": "Better Go To File: Inspect Icons"
+        "command": "betterGoToFile.openDebug",
+        "title": "Better Go To File: Open (debug)"
       },
       {
-        "command": "betterGoToFile.inspectContributorRelationships",
-        "title": "Better Go To File: Inspect Contributor Relationships"
+        "command": "betterGoToFile.reindex",
+        "title": "Better Go To File: Reindex Now"
+      },
+      {
+        "command": "betterGoToFile.inspectIcons",
+        "title": "Better Go To File: Inspect Icons"
       }
     ],
     "configuration": {
       "title": "Better Go To File",
       "properties": {
-        "betterGoToFile.picker.showScores": {
-          "type": "boolean",
-          "default": false,
-          "markdownDescription": "Shows each result's ranking score in the picker detail line."
-        },
-        "betterGoToFile.picker.maxVisibleResults": {
-          "type": "number",
-          "default": 200,
-          "minimum": 1,
-          "markdownDescription": "Maximum number of ranked results shown in the picker."
-        },
-        "betterGoToFile.picker.description.pathTailSegments": {
-          "type": "number",
-          "default": 3,
-          "minimum": 1,
-          "markdownDescription": "How many trailing path segments to keep when shortening descriptions."
-        },
-        "betterGoToFile.picker.description.collapsedTailSegments": {
-          "type": "number",
-          "default": 2,
-          "minimum": 1,
-          "markdownDescription": "More aggressive fallback tail length for shortened descriptions."
-        },
-        "betterGoToFile.picker.description.queryContextRadius": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "markdownDescription": "How many path segments around query matches stay visible in descriptions."
-        },
-        "betterGoToFile.picker.description.maxRowWidthUnits": {
-          "type": "number",
-          "default": 72,
-          "minimum": 1,
-          "markdownDescription": "Estimated row width budget used when truncating description text."
-        },
-        "betterGoToFile.picker.description.labelPaddingWidthUnits": {
-          "type": "number",
-          "default": 8,
-          "minimum": 0,
-          "markdownDescription": "Reserved width budget between the filename label and description."
-        },
-        "betterGoToFile.picker.description.minDescriptionWidthUnits": {
-          "type": "number",
-          "default": 16,
-          "minimum": 1,
-          "markdownDescription": "Minimum width budget kept for the description even for long file names."
-        },
         "betterGoToFile.gitignored.visibility": {
           "type": "string",
           "enum": [
@@ -105,28 +66,6 @@
           ],
           "default": "auto",
           "markdownDescription": "Controls whether gitignored files appear in the picker. `auto` hides them unless the query looks specific."
-        },
-        "betterGoToFile.gitignored.auto.minQueryLength": {
-          "type": "number",
-          "default": 12,
-          "minimum": 1,
-          "markdownDescription": "Minimum query length that makes `gitignored.visibility: auto` reveal ignored files."
-        },
-        "betterGoToFile.gitignored.auto.minTokenCount": {
-          "type": "number",
-          "default": 2,
-          "minimum": 1,
-          "markdownDescription": "Minimum number of whitespace-separated query tokens that makes auto mode reveal ignored files."
-        },
-        "betterGoToFile.gitignored.auto.revealOnPathSeparator": {
-          "type": "boolean",
-          "default": true,
-          "markdownDescription": "Makes auto mode reveal ignored files when the query includes path-like separators such as `.`, `/`, or `\\`."
-        },
-        "betterGoToFile.workspaceIndex.fileGlob": {
-          "type": "string",
-          "default": "**/*",
-          "markdownDescription": "Glob used to discover candidate files for the in-memory workspace index."
         },
         "betterGoToFile.workspaceIndex.excludedDirectories": {
           "type": "array",
@@ -145,241 +84,38 @@
           ],
           "markdownDescription": "Directory segment names excluded from the workspace file index."
         },
-        "betterGoToFile.workspaceIndex.maxFileCount": {
-          "type": "number",
-          "default": 50000,
-          "minimum": 1,
-          "markdownDescription": "Maximum number of files loaded into the workspace index."
+        "betterGoToFile.scoring.preset": {
+          "type": "string",
+          "enum": [
+            "balanced",
+            "exact",
+            "recent",
+            "nearby",
+            "fuzzy"
+          ],
+          "default": "balanced",
+          "markdownEnumDescriptions": [
+            "Recommended default. Prioritizes exact filename intent while keeping context boosts moderate.",
+            "Strongly prefers exact and prefix matches with lighter contextual reranking.",
+            "Pushes recently and explicitly opened files higher, especially while browsing.",
+            "Favors files near the active editor, package, and directory tree.",
+            "Handles abbreviated and rough queries more aggressively."
+          ],
+          "markdownDescription": "Selects one of the built-in scoring presets."
         },
-        "betterGoToFile.frecency.halfLifeDays": {
-          "type": "number",
-          "default": 14,
-          "minimum": 1,
-          "markdownDescription": "How quickly recorded opens decay over time."
-        },
-        "betterGoToFile.frecency.flushDelayMs": {
-          "type": "number",
-          "default": 1500,
-          "minimum": 0,
-          "markdownDescription": "Delay before frecency changes are persisted to disk."
-        },
-        "betterGoToFile.frecency.maxRecords": {
-          "type": "number",
-          "default": 20000,
-          "minimum": 1,
-          "markdownDescription": "Maximum number of frecency records persisted."
-        },
-        "betterGoToFile.visits.implicitOpenWeight": {
-          "type": "number",
-          "default": 1,
-          "minimum": 0,
-          "markdownDescription": "Weight assigned when a file is considered opened from dwell time in the active editor."
-        },
-        "betterGoToFile.visits.explicitOpenWeight": {
-          "type": "number",
-          "default": 2,
-          "minimum": 0,
-          "markdownDescription": "Weight assigned when a file is opened directly from the picker."
-        },
-        "betterGoToFile.visits.editorDwellMs": {
-          "type": "number",
-          "default": 900,
-          "minimum": 0,
-          "markdownDescription": "How long a file must stay active before it counts as an implicit open."
-        },
-        "betterGoToFile.visits.duplicateVisitWindowMs": {
-          "type": "number",
-          "default": 15000,
-          "minimum": 0,
-          "markdownDescription": "Window used to suppress duplicate visit recording for the same file."
-        },
-        "betterGoToFile.git.refreshDebounceMs": {
-          "type": "number",
-          "default": 500,
-          "minimum": 0,
-          "markdownDescription": "Debounce delay before Git state is refreshed after `.git` metadata changes."
-        },
-        "betterGoToFile.ranking.lexical.basenameExactScore": {
-          "type": "number",
-          "default": 5600,
-          "minimum": 0,
-          "markdownDescription": "Base score for an exact basename match."
-        },
-        "betterGoToFile.ranking.lexical.pathExactScore": {
-          "type": "number",
-          "default": 5200,
-          "minimum": 0,
-          "markdownDescription": "Base score for an exact relative-path match."
-        },
-        "betterGoToFile.ranking.lexical.basenamePrefixScore": {
-          "type": "number",
-          "default": 4700,
-          "minimum": 0,
-          "markdownDescription": "Base score for a basename prefix match."
-        },
-        "betterGoToFile.ranking.lexical.pathPrefixScore": {
-          "type": "number",
-          "default": 4300,
-          "minimum": 0,
-          "markdownDescription": "Base score for a path prefix match."
-        },
-        "betterGoToFile.ranking.lexical.basenameBoundaryScore": {
-          "type": "number",
-          "default": 3900,
-          "minimum": 0,
-          "markdownDescription": "Base score for a basename match that starts at a word or camel-case boundary."
-        },
-        "betterGoToFile.ranking.lexical.pathBoundaryScore": {
-          "type": "number",
-          "default": 3200,
-          "minimum": 0,
-          "markdownDescription": "Base score for a path match that starts at a directory or word boundary."
-        },
-        "betterGoToFile.ranking.lexical.basenameSubstringScore": {
-          "type": "number",
-          "default": 3000,
-          "minimum": 0,
-          "markdownDescription": "Base score for a plain basename substring match."
-        },
-        "betterGoToFile.ranking.lexical.pathSubstringScore": {
-          "type": "number",
-          "default": 2500,
-          "minimum": 0,
-          "markdownDescription": "Base score for a plain path substring match."
-        },
-        "betterGoToFile.ranking.lexical.basenameFuzzyBonus": {
-          "type": "number",
-          "default": 1800,
-          "minimum": 0,
-          "markdownDescription": "Bonus added to fuzzy basename matches."
-        },
-        "betterGoToFile.ranking.lexical.pathFuzzyBonus": {
-          "type": "number",
-          "default": 900,
-          "minimum": 0,
-          "markdownDescription": "Bonus added to fuzzy path matches."
-        },
-        "betterGoToFile.ranking.context.frecencyQueryMultiplier": {
-          "type": "number",
-          "default": 140,
-          "minimum": 0,
-          "markdownDescription": "Multiplier applied to frecency when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.frecencyBrowseMultiplier": {
-          "type": "number",
-          "default": 240,
-          "minimum": 0,
-          "markdownDescription": "Multiplier applied to frecency when the picker query is empty."
-        },
-        "betterGoToFile.ranking.context.trackedQueryBoost": {
-          "type": "number",
-          "default": 120,
-          "minimum": 0,
-          "markdownDescription": "Boost for Git-tracked files when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.trackedBrowseBoost": {
-          "type": "number",
-          "default": 240,
-          "minimum": 0,
-          "markdownDescription": "Boost for Git-tracked files when browsing with an empty query."
-        },
-        "betterGoToFile.ranking.context.ignoredQueryPenalty": {
-          "type": "number",
-          "default": 1800,
-          "minimum": 0,
-          "markdownDescription": "Penalty for Git-ignored files when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.ignoredBrowsePenalty": {
-          "type": "number",
-          "default": 3000,
-          "minimum": 0,
-          "markdownDescription": "Penalty for Git-ignored files when browsing with an empty query."
-        },
-        "betterGoToFile.ranking.context.untrackedQueryPenalty": {
-          "type": "number",
-          "default": 1100,
-          "minimum": 0,
-          "markdownDescription": "Penalty for untracked files when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.untrackedBrowsePenalty": {
-          "type": "number",
-          "default": 2200,
-          "minimum": 0,
-          "markdownDescription": "Penalty for untracked files when browsing with an empty query."
-        },
-        "betterGoToFile.ranking.context.openQueryBoost": {
-          "type": "number",
-          "default": 170,
-          "minimum": 0,
-          "markdownDescription": "Boost for files that already have an open tab when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.openBrowseBoost": {
-          "type": "number",
-          "default": 320,
-          "minimum": 0,
-          "markdownDescription": "Boost for files that already have an open tab when browsing with an empty query."
-        },
-        "betterGoToFile.ranking.context.activeQueryBoost": {
-          "type": "number",
-          "default": 120,
-          "minimum": 0,
-          "markdownDescription": "Boost for the active file when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.activeBrowseBoost": {
-          "type": "number",
-          "default": 260,
-          "minimum": 0,
-          "markdownDescription": "Boost for the active file when browsing with an empty query."
-        },
-        "betterGoToFile.ranking.context.sameDirectoryQueryBoost": {
-          "type": "number",
-          "default": 110,
-          "minimum": 0,
-          "markdownDescription": "Boost for files in the active file's directory when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.sameDirectoryBrowseBoost": {
-          "type": "number",
-          "default": 210,
-          "minimum": 0,
-          "markdownDescription": "Boost for files in the active file's directory when browsing with an empty query."
-        },
-        "betterGoToFile.ranking.context.sharedPrefixSegmentQueryBoost": {
-          "type": "number",
-          "default": 40,
-          "minimum": 0,
-          "markdownDescription": "Per-segment boost for files that share at least two leading directory segments with the active file when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.sharedPrefixSegmentBrowseBoost": {
-          "type": "number",
-          "default": 70,
-          "minimum": 0,
-          "markdownDescription": "Per-segment boost for files that share at least two leading directory segments with the active file when browsing with an empty query."
-        },
-        "betterGoToFile.ranking.context.sharedPrefixSingleQueryBoost": {
-          "type": "number",
-          "default": 24,
-          "minimum": 0,
-          "markdownDescription": "Boost for files that share exactly one leading directory segment with the active file when the picker has a query."
-        },
-        "betterGoToFile.ranking.context.sharedPrefixSingleBrowseBoost": {
-          "type": "number",
-          "default": 44,
-          "minimum": 0,
-          "markdownDescription": "Boost for files that share exactly one leading directory segment with the active file when browsing with an empty query."
-        },
-        "betterGoToFile.diagnostics.iconSampleCount": {
-          "type": "number",
-          "default": 6,
-          "minimum": 1,
-          "markdownDescription": "How many files the icon inspection command samples."
+        "betterGoToFile.scoring.customPreset": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Optional JSON string layered on top of the selected scoring preset. Leave empty to use the preset as-is. Example: `{\"visits\":{\"explicitOpenWeight\":4}}`."
         }
       }
     }
   },
   "activationEvents": [
-    "onCommand:betterGoToFile.inspectContributorRelationships",
     "onCommand:betterGoToFile.inspectIcons",
     "onCommand:betterGoToFile.open",
+    "onCommand:betterGoToFile.openDebug",
+    "onCommand:betterGoToFile.reindex",
     "onStartupFinished"
   ],
   "engines": {

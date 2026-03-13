@@ -5,7 +5,7 @@
     "noEmit": true,
     "rootDir": "."
   },
-  "include": ["test/**/*.ts", "test/**/*.d.ts"],
+  "include": ["test/**/*.ts", "test/**/*.d.ts", "scripts/**/*.ts"],
   "references": [
     {
       "path": "./tsconfig.lib.json"

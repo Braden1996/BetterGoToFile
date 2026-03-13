@@ -1,19 +1,37 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { type BetterGoToFileConfig, BetterGoToFileConfigStore } from "../config";
+import {
+  type BetterGoToFileConfig,
+  BetterGoToFileConfigStore,
+  isUsingCustomScoring,
+} from "../config";
 import {
   scoreContributorFile,
   scoreGitSessionOverlay,
   ContributorRelationshipIndex,
   type FileEntry,
+  type GitTrackingState,
   GitTrackedIndex,
   normalizePath,
   type WorkspaceContributorRelationshipSnapshot,
+  type WorkspaceFileIndexStatus,
   toRelativeWorkspacePath,
   WorkspaceFileIndex,
 } from "../workspace";
 import { FrecencyStore } from "./frecency-store";
 import type { FileSearchRankingContext } from "./file-search";
+
+export interface SearchRuntimeStatus {
+  readonly index: WorkspaceFileIndexStatus;
+  readonly openPathCount: number;
+  readonly scoringPreset: BetterGoToFileConfig["scoring"]["preset"];
+  readonly usingCustomScoring: boolean;
+  readonly gitignoredVisibility: BetterGoToFileConfig["gitignored"]["visibility"];
+  readonly contributorRelationships: {
+    readonly loadedWorkspaceFolderCount: number;
+    readonly primarySnapshot?: WorkspaceContributorRelationshipSnapshot;
+  };
+}
 
 export class SearchRuntime implements vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<void>();
@@ -38,8 +56,14 @@ export class SearchRuntime implements vscode.Disposable {
     const frecencyPath = context.storageUri
       ? path.join(context.storageUri.fsPath, "frecency.json")
       : undefined;
+    const workspaceIndexPersistencePath = context.storageUri
+      ? path.join(context.storageUri.fsPath, "workspace-index.json")
+      : undefined;
 
-    this.index = new WorkspaceFileIndex(this.config.workspaceIndex, log);
+    this.index = new WorkspaceFileIndex(this.config.workspaceIndex, {
+      persistenceFilePath: workspaceIndexPersistencePath,
+      log,
+    });
     this.frecencyStore = new FrecencyStore(frecencyPath, this.config.frecency);
     this.gitTrackedIndex = new GitTrackedIndex(this.config.git, log);
     this.contributorRelationshipIndex = new ContributorRelationshipIndex(
@@ -81,11 +105,7 @@ export class SearchRuntime implements vscode.Disposable {
   }
 
   async ready(): Promise<void> {
-    await Promise.all([
-      this.index.ready(),
-      this.frecencyStore.ready(),
-      this.gitTrackedIndex.ready(),
-    ]);
+    await Promise.all([this.index.ready(), this.frecencyStore.ready()]);
   }
 
   getConfig(): BetterGoToFileConfig {
@@ -96,17 +116,71 @@ export class SearchRuntime implements vscode.Disposable {
     return this.index.getEntries();
   }
 
+  getStatus(): SearchRuntimeStatus {
+    const contributorRelationshipSnapshots = this.contributorRelationshipIndex.getLoadedSnapshots();
+
+    return {
+      index: this.index.getStatus(),
+      openPathCount: collectOpenPaths().size,
+      scoringPreset: this.config.scoring.preset,
+      usingCustomScoring: isUsingCustomScoring(this.config),
+      gitignoredVisibility: this.config.gitignored.visibility,
+      contributorRelationships: {
+        loadedWorkspaceFolderCount: contributorRelationshipSnapshots.length,
+        primarySnapshot: getPrimaryContributorRelationshipSnapshot(
+          contributorRelationshipSnapshots,
+        ),
+      },
+    };
+  }
+
   buildRankingContext(): FileSearchRankingContext {
     const now = Date.now();
     const activePath = getActivePath();
+    const frecencyScores = new Map<string, number>();
+    const gitPriors = new Map<string, number>();
+    const gitTrackingStates = new Map<string, GitTrackingState>();
 
     return {
       activePath,
       activePackageRoot: activePath ? this.index.getEntry(activePath)?.packageRoot : undefined,
       openPaths: collectOpenPaths(),
-      getFrecencyScore: (relativePath) => this.frecencyStore.getCurrentScore(relativePath, now),
-      getGitPrior: (entry) => this.getGitPrior(entry),
-      getGitTrackingState: (entry) => this.gitTrackedIndex.getTrackingState(entry.uri),
+      getFrecencyScore: (relativePath) => {
+        const cachedScore = frecencyScores.get(relativePath);
+
+        if (cachedScore !== undefined) {
+          return cachedScore;
+        }
+
+        const score = this.frecencyStore.getCurrentScore(relativePath, now);
+
+        frecencyScores.set(relativePath, score);
+        return score;
+      },
+      getGitPrior: (entry) => {
+        const cachedPrior = gitPriors.get(entry.relativePath);
+
+        if (cachedPrior !== undefined) {
+          return cachedPrior;
+        }
+
+        const prior = this.getGitPrior(entry);
+
+        gitPriors.set(entry.relativePath, prior);
+        return prior;
+      },
+      getGitTrackingState: (entry) => {
+        const cachedState = gitTrackingStates.get(entry.relativePath);
+
+        if (cachedState !== undefined) {
+          return cachedState;
+        }
+
+        const gitTrackingState = this.gitTrackedIndex.getTrackingState(entry.uri);
+
+        gitTrackingStates.set(entry.relativePath, gitTrackingState);
+        return gitTrackingState;
+      },
     };
   }
 
@@ -124,6 +198,10 @@ export class SearchRuntime implements vscode.Disposable {
     readonly WorkspaceContributorRelationshipSnapshot[]
   > {
     return this.contributorRelationshipIndex.inspectWorkspaceFolders();
+  }
+
+  async refreshIndex(): Promise<void> {
+    await this.index.refreshNow();
   }
 
   dispose(): void {
@@ -271,4 +349,24 @@ function maybeAddPath(paths: Set<string>, uri: vscode.Uri): void {
   if (relativePath) {
     paths.add(relativePath);
   }
+}
+
+function getPrimaryContributorRelationshipSnapshot(
+  snapshots: readonly WorkspaceContributorRelationshipSnapshot[],
+): WorkspaceContributorRelationshipSnapshot | undefined {
+  const activeWorkspaceFolderPath = vscode.window.activeTextEditor
+    ? vscode.workspace.getWorkspaceFolder(vscode.window.activeTextEditor.document.uri)?.uri.fsPath
+    : undefined;
+
+  if (activeWorkspaceFolderPath) {
+    const activeSnapshot = snapshots.find(
+      (snapshot) => snapshot.workspaceFolderPath === activeWorkspaceFolderPath,
+    );
+
+    if (activeSnapshot) {
+      return activeSnapshot;
+    }
+  }
+
+  return snapshots.find((snapshot) => snapshot.status === "ready") ?? snapshots[0];
 }

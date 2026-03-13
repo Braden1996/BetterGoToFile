@@ -164,6 +164,32 @@ describe("rankSearchCandidates", () => {
     expect(ranked[0]?.total).toBeGreaterThan(ranked[1]?.total ?? 0);
   });
 
+  test("captures score breakdown data for debug display", () => {
+    const candidates = [createCandidate("src/search/config.ts")];
+
+    const ranked = scoreSearchCandidates(candidates, "config", {
+      activePath: "src/search/index.ts",
+      openPaths: new Set(["src/search/config.ts"]),
+      getFrecencyScore: () => 8,
+      getGitPrior: () => 6,
+      getGitTrackingState: () => "tracked",
+    });
+
+    expect(ranked[0]?.breakdown.lexical.tokenMatches[0]).toEqual({
+      token: "config",
+      kind: "basenamePrefix",
+      score: 5_091,
+    });
+    expect(ranked[0]?.breakdown.context.contributions).toEqual([
+      { label: "frecency", score: 349 },
+      { label: "tracked", score: 80 },
+      { label: "open", score: 120 },
+      { label: "same-dir", score: 90 },
+    ]);
+    expect(ranked[0]?.breakdown.gitPrior.rawPrior).toBe(6);
+    expect(ranked[0]?.breakdown.gitPrior.total).toBeGreaterThan(0);
+  });
+
   test("uses configured ranking weights", () => {
     const candidates = [
       createCandidate("src/features/history-index.ts"),

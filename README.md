@@ -1,32 +1,245 @@
 # Better Go To File
 
-Minimal VS Code extension scaffold for a custom "Go To File" popup.
+Better Go To File is a file picker with a deterministic ranking pipeline: lexical intent first, then editor context, then Git-derived reranking.
 
-## What it does
+## Search Algorithm
 
-- Adds the `Better Go To File: Open` command.
-- Adds the `Better Go To File: Inspect Contributor Relationships` command for git-history diagnostics.
-- Shows a Quick Pick with file names and relative paths.
-- Keeps a warm workspace index in memory after startup.
-- Learns from editor activity with a persisted frecency store.
-- Opens the selected file.
-- Keeps ranking logic isolated in pure modules for Bun tests and later scoring tweaks.
+### Overview
 
-## Run it
+1. Build a candidate list from workspace files.
+2. Infer package roots from directories that contain `package.json` or `project.json`.
+3. Normalize the query to lowercase tokens split on whitespace.
+4. Run a lexical pass. Every token must match each candidate somewhere, or the candidate is dropped.
+5. Add context scores from frecency, active file/package proximity, open tabs, and Git tracked state.
+6. Add Git priors from contributor history and current worktree activity.
+7. Sort by total score, then lexical score, then path/name tiebreakers.
 
-1. Install dependencies with `bun install`.
-2. Build with `bun run compile`.
-3. Press `F5` in VS Code to launch the extension host.
-4. Run `Better Go To File: Open` from the Command Palette.
+```mermaid
+flowchart TD
+    A[Scan workspace files] --> B[Create candidates]
+    B --> C[Infer nearest package root]
+    Q[Normalize query into tokens] --> D[Lexical pass]
+    C --> D
+    D --> E[Context pass]
+    F[Frecency, active file, open tabs, tracked or ignored state] --> E
+    D --> G[Git prior pass]
+    H[Contributor history and worktree session overlay] --> G
+    D --> I[Combine scores]
+    E --> I
+    G --> I
+    I --> J[Sort and return top matches]
+```
 
-## Test it
+## Candidate Index
 
-Run `bun test`.
+- Scan workspace folders with the configured glob. The default is `**/*`.
+- Skip symbolic links and excluded directory names such as `.git`, `node_modules`, `dist`, `out`, `.next`, `.nx`, `.turbo`, and `coverage`.
+- Store each candidate as:
+  - `basename`
+  - `relativePath`
+  - `directory`
+  - `packageRoot`
+  - lowercase search fields for basename and full path
+- Resolve `packageRoot` as the nearest ancestor directory containing `package.json` or `project.json`.
 
-## Keep it clean
+This means a file like `packages/runtimes/mobile-app/src/button.tsx` carries both its full path and the nearest package root `packages/runtimes/mobile-app`.
 
-- `bun run fmt`
-- `bun run fmt:check`
-- `bun run lint`
-- `bun run knip`
-- `bun run check`
+## Query Processing
+
+- Trim the query.
+- Lowercase it.
+- Split on whitespace into tokens.
+- Use AND semantics: every token must match the candidate somewhere.
+- If the query is empty, skip the lexical pass and rank purely on context plus Git priors.
+
+## Lexical Scoring
+
+For each token, the scorer stops at the first matching category in this order:
+
+| Order | Match type | Notes |
+| --- | --- | --- |
+| 1 | Basename exact | `button.tsx` matches `button.tsx` |
+| 2 | Full path exact | `src/button.tsx` matches the whole relative path |
+| 3 | Full path prefix | Only used when the token contains a path separator |
+| 4 | Basename prefix | `button` matches `button-grid.component.tsx` |
+| 5 | Basename boundary | Match starts at a boundary such as `-`, `_`, `.`, `/`, or camelCase |
+| 6 | Basename substring | Lower-value basename containment |
+| 7 | Package exact/prefix/boundary/substring | Uses the basename of the nearest package root |
+| 8 | Full path boundary | Boundary match anywhere in the path |
+| 9 | Full path substring | Lower-value path containment |
+| 10 | Basename fuzzy | Ordered character match on basename |
+| 11 | Package fuzzy | Ordered character match on package basename |
+| 12 | Full path fuzzy | Ordered character match on full path |
+
+Important details:
+
+- Boundary means start-of-string, after `/`, `\`, `-`, `_`, `.`, space, or a camelCase transition.
+- Package matching uses the package directory name, not the entire package path. For `packages/runtimes/mobile-app`, the package match target is `mobile-app`.
+- Exact and prefix categories start from large preset constants and subtract length or position penalties.
+- Fuzzy matching rewards:
+  - each matched character
+  - matches near the start
+  - contiguous streaks
+  - boundary hits
+  - ending at the last character
+- Fuzzy matching penalizes:
+  - skipped gaps between matched characters
+  - long target strings
+
+After all tokens match:
+
+- Add a query structure bonus when tokens land in multiple path segments and progress forward through the path.
+- Add an extra structure bonus when one token matches the package and another matches the basename.
+- Subtract a path length penalty of `0.08 * relativePath.length`.
+
+## Context Scoring
+
+After lexical filtering, the scorer adds context contributions:
+
+- Frecency:
+  - `round(log2(1 + frecencyScore) * multiplier)`
+  - uses query multipliers when the query is non-empty
+  - uses browse multipliers when the query is empty
+- Git tracked state:
+  - tracked files get a boost
+  - ignored and untracked files get penalties
+- Open tabs:
+  - open files get a boost
+- Active file:
+  - the exact active file gets a boost
+- Same package:
+  - files in the same package as the active file get a boost
+- Directory proximity:
+  - same directory gets a strong boost
+  - otherwise shared leading directory segments get a smaller boost
+
+The same-package boost is intentionally larger than a plain shared-prefix boost.
+
+## Frecency
+
+Frecency is persisted to disk and decays over time.
+
+- Default half-life comes from the active scoring preset. The balanced preset uses 10 days.
+- Implicit visits are recorded after the editor stays on a file for the dwell threshold. The balanced preset uses:
+  - `editorDwellMs = 900`
+  - `implicitOpenWeight = 1`
+- Explicit picker opens record a larger visit:
+  - `explicitOpenWeight = 2`
+- Duplicate visits inside the duplicate window are ignored:
+  - `duplicateVisitWindowMs = 15000`
+- The store flushes to disk after a short debounce:
+  - `flushDelayMs = 1500`
+- The persisted JSON keeps:
+  - `score`
+  - `referenceTime`
+  - `lastAccessed`
+  - `accessCount`
+
+Only useful entries are kept when persisting. Very cold entries are dropped unless they were accessed recently enough.
+
+## Git Scoring
+
+Git contributes in two different ways.
+
+### 1. Git tracked state
+
+Tracked, ignored, and untracked state feed into the context pass directly. This is per-file state, not ancestor propagation.
+
+### 2. Git prior reranking
+
+Git priors are a separate reranking term:
+
+- Raw Git prior = contributor prior + `1.6 * session overlay prior`
+- Final Git score = `log1p(rawGitPrior) * 450 * ambiguity`
+- Ambiguity = `clamp(log1p(lexicalMatchCount) / log1p(500), 0, 1)`
+
+This means Git priors matter most when the lexical pass returns a broad ambiguous set.
+
+### Contributor prior
+
+Contributor scoring mixes:
+
+- exact file lineage weights
+- teammate file lineage weights
+- ownership share
+- scoped area-prefix weights
+
+The important propagation rule is:
+
+- Git area propagation does **not** walk from the leaf file all the way to repo root.
+- The scope root is:
+  - the nearest package root, if one exists
+  - otherwise the top-level directory
+- Within that scope, the scorer keeps:
+  - the scope root itself
+  - the two deepest ancestor directories under that scope
+
+Example:
+
+- File: `packages/runtimes/web-app/src/react/workflows/editor/button.tsx`
+- Scope root: `packages/runtimes/web-app`
+- Area prefixes used for area scoring:
+  - `packages/runtimes/web-app`
+  - `packages/runtimes/web-app/src/react/workflows`
+  - `packages/runtimes/web-app/src/react/workflows/editor`
+
+That cap is deliberate. It avoids giving unrelated files credit just because they share broad ancestors high in the repo.
+
+### Session overlay prior
+
+The live worktree overlay uses the same scoped area-prefix logic, but its raw weights come from current Git activity:
+
+- branch-unique files: `0.85`
+- modified files: `1.1`
+- staged files: `1.3`
+- untracked files: `0.6`
+
+Those weights are summed per file and then rolled up into scoped area prefixes.
+
+## Gitignored Visibility
+
+Ignored files are hidden by default unless the query looks specific.
+
+In `auto` mode, ignored files become visible when one of these is true:
+
+- query length is at least 12 characters
+- query has at least 2 tokens
+- query contains a path separator such as `/`, `\`, or `.`
+
+## Commands
+
+```bash
+bun run score -- --help
+```
+
+Show all local scoring commands.
+
+```bash
+bun run score:search -- --repo /Users/braden/Development/Phoenix --limit 10 button
+```
+
+Rank the top matches for a query.
+
+```bash
+bun run score:search -- --repo /Users/braden/Development/Phoenix --debug button
+```
+
+Print score breakdowns with lexical, context, frecency, and Git-prior contributions.
+
+```bash
+bun run score:explain -- --repo /Users/braden/Development/Phoenix button path/to/file.tsx
+```
+
+Explain why one file ranked where it did and show nearby neighbors.
+
+```bash
+bun run score:search -- --repo /Users/braden/Development/Phoenix --frecency-file /path/to/frecency.json --contributor-email you@example.com --debug button
+```
+
+Override the frecency snapshot or contributor identity for a debugging run.
+
+```bash
+bun run score:search -- --repo /Users/braden/Development/Phoenix --no-frecency button
+```
+
+Disable persisted frecency to isolate lexical and Git effects.

@@ -1,7 +1,6 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import { findNearestPackageRoot } from "./package-root";
-import { normalizeDirectory, normalizePath } from "./workspace-path";
+import { normalizeDirectory } from "./workspace-path";
 
 export interface FileEntry {
   readonly uri: vscode.Uri;
@@ -15,29 +14,28 @@ export interface FileEntry {
   readonly searchPath: string;
 }
 
-const EMPTY_PACKAGE_ROOT_DIRECTORIES = new Set<string>();
+interface CreateFileEntryOptions {
+  readonly uri: vscode.Uri;
+  readonly relativePath: string;
+  readonly packageRoot?: string;
+  readonly workspaceFolderPath?: string;
+  readonly workspaceFolderName?: string;
+}
 
-export function toFileEntry(
-  uri: vscode.Uri,
-  isMultiRoot: boolean,
-  packageRootDirectories: ReadonlySet<string> = EMPTY_PACKAGE_ROOT_DIRECTORIES,
-): FileEntry {
-  const workspaceFolder = vscode.workspace.getWorkspaceFolder(uri);
-  const relativePath = normalizePath(vscode.workspace.asRelativePath(uri, false));
-  const basename = path.basename(relativePath);
-  const directory = normalizeDirectory(path.dirname(relativePath));
-  const packageRoot = findNearestPackageRoot(directory, packageRootDirectories);
+export function createFileEntry(options: CreateFileEntryOptions): FileEntry {
+  const basename = path.posix.basename(options.relativePath);
+  const directory = normalizeDirectory(path.posix.dirname(options.relativePath));
 
   return {
-    uri,
+    uri: options.uri,
     basename,
-    relativePath,
+    relativePath: options.relativePath,
     directory,
-    packageRoot,
-    workspaceFolderPath: workspaceFolder?.uri.fsPath,
-    workspaceFolderName: isMultiRoot ? workspaceFolder?.name : undefined,
+    packageRoot: options.packageRoot,
+    workspaceFolderPath: options.workspaceFolderPath,
+    workspaceFolderName: options.workspaceFolderName,
     searchBasename: basename.toLowerCase(),
-    searchPath: relativePath.toLowerCase(),
+    searchPath: options.relativePath.toLowerCase(),
   };
 }
 
