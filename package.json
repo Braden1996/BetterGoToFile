@@ -136,8 +136,12 @@
     "onCommand:betterGoToFile.reindex",
     "onStartupFinished"
   ],
+  "icon": "assets/extension-icon.png",
   "engines": {
     "vscode": "^1.97.0"
   },
-  "packageManager": "bun@1.3.10"
+  "packageManager": "bun@1.3.10",
+  "vsce": {
+    "baseImagesUrl": "https://raw.githubusercontent.com/Braden1996/BetterGoToFile/master"
+  }
 }
