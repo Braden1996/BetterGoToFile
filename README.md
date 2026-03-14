@@ -2,9 +2,54 @@
 
 ![Better Go To File banner showing before-and-after file search results](assets/banner.png)
 
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=Braden.better-go-to-file">
+    <img
+      alt="Visual Studio Marketplace version"
+      src="https://img.shields.io/visual-studio-marketplace/v/Braden.better-go-to-file?style=for-the-badge&label=VS%20Marketplace&labelColor=282A36&color=BD93F9&logo=visualstudiocode&logoColor=F8F8F2"
+    />
+  </a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=Braden.better-go-to-file">
+    <img
+      alt="Visual Studio Marketplace installs"
+      src="https://img.shields.io/visual-studio-marketplace/i/Braden.better-go-to-file?style=for-the-badge&label=Installs&labelColor=282A36&color=6272A4&logo=visualstudiocode&logoColor=F8F8F2"
+    />
+  </a>
+  <a href="https://open-vsx.org/extension/Braden/better-go-to-file">
+    <img
+      alt="Open VSX version"
+      src="https://img.shields.io/open-vsx/v/Braden/better-go-to-file?style=for-the-badge&label=Open%20VSX&labelColor=282A36&color=8BE9FD&logo=eclipseide&logoColor=282A36"
+    />
+  </a>
+  <a href="https://open-vsx.org/extension/Braden/better-go-to-file">
+    <img
+      alt="Open VSX downloads"
+      src="https://img.shields.io/open-vsx/dt/Braden/better-go-to-file?style=for-the-badge&label=Open%20VSX%20Downloads&labelColor=282A36&color=50FA7B&logo=eclipseide&logoColor=282A36"
+    />
+  </a>
+  <a href="https://github.com/Braden1996/BetterGoToFile/actions/workflows/checks.yml">
+    <img
+      alt="Checks status"
+      src="https://img.shields.io/github/actions/workflow/status/Braden1996/BetterGoToFile/checks.yml?branch=master&style=for-the-badge&label=Checks&labelColor=282A36&color=50FA7B&logo=githubactions&logoColor=282A36"
+    />
+  </a>
+  <a href="https://github.com/Braden1996/BetterGoToFile/releases/latest">
+    <img
+      alt="Latest GitHub release"
+      src="https://img.shields.io/github/v/release/Braden1996/BetterGoToFile?sort=semver&style=for-the-badge&label=Release&labelColor=282A36&color=FFB86C&logo=github&logoColor=282A36"
+    />
+  </a>
+  <a href="https://github.com/Braden1996/BetterGoToFile/releases/latest">
+    <img
+      alt="Download latest VSIX from GitHub Releases"
+      src="https://img.shields.io/badge/VSIX-latest%20artifact-FF79C6?style=for-the-badge&labelColor=282A36&logo=github&logoColor=F8F8F2"
+    />
+  </a>
+</p>
+
 ## What is Better Go To File?
 
-Better Go To File is a smarter `Go to File` picker for VS Code style editors. It keeps the speed of `Cmd/Ctrl+P`, but ranks results with more of the context you already use when navigating a real codebase.
+Better Go To File is a `Go to File` picker for VS Code style editors that stays literal when your query is specific and gets smarter when it is not. It keeps the speed of `Cmd/Ctrl+P`, but adds the repository context the default picker throws away. Its distinctive signal is **Git-aware reranking**: it learns the feature areas you work in, infers nearby teammates from overlapping history, and uses current worktree activity plus shared file lineage to pull the relevant slice of the repo toward the top.
 
 ## The Problem
 
@@ -12,64 +57,15 @@ Once a repo gets large, the default picker starts to fail in predictable ways:
 
 - **Duplicate filenames** like `index.ts`, `routes.ts`, and `button.tsx` crowd the top of the results.
 - **Monorepo path noise** makes it hard to tell which package a file actually belongs to.
-- **Weak context** means the picker ignores what you opened recently, what file you are in, and what package you are working on.
+- **No repository context** means the picker has no idea what part of the codebase you work in or which nearby contributors tend to touch related files.
 - **Short queries** are treated as if they were precise, even when they clearly are not.
 
-## What Better Go To File Does Differently
+## Why It Feels Better
 
-- **Ranks by intent, not just text.** It combines lexical matching with frecency, editor context, and Git signals.
-- **Learns your workflow.** Recently and frequently opened files rise naturally, especially for broad or empty queries.
-- **Understands monorepos.** Package roots matter, and result rows keep the package name visible when paths are truncated.
-- **Uses Git intelligently.** Current worktree activity and contributor overlap help ambiguous results surface the files you are actually likely to want.
-- **Stays skimmable.** The picker is optimized for fast scanning instead of dumping long noisy paths into every result row.
-
-<p align="center">
-  <a href="https://marketplace.visualstudio.com/items?itemName=Braden.better-go-to-file">
-    <img
-      alt="Visual Studio Marketplace version"
-      src="https://img.shields.io/visual-studio-marketplace/v/Braden.better-go-to-file?style=flat-square&label=VS%20Marketplace&logo=visualstudiocode&logoColor=white"
-    />
-  </a>
-  <a href="https://marketplace.visualstudio.com/items?itemName=Braden.better-go-to-file">
-    <img
-      alt="Visual Studio Marketplace installs"
-      src="https://img.shields.io/visual-studio-marketplace/i/Braden.better-go-to-file?style=flat-square&label=Installs&logo=visualstudiocode&logoColor=white"
-    />
-  </a>
-  <a href="https://open-vsx.org/extension/Braden/better-go-to-file">
-    <img
-      alt="Open VSX version"
-      src="https://img.shields.io/open-vsx/v/Braden/better-go-to-file?style=flat-square&label=Open%20VSX"
-    />
-  </a>
-  <a href="https://open-vsx.org/extension/Braden/better-go-to-file">
-    <img
-      alt="Open VSX downloads"
-      src="https://img.shields.io/open-vsx/dt/Braden/better-go-to-file?style=flat-square&label=Downloads"
-    />
-  </a>
-</p>
-
-<p align="center">
-  <a href="https://github.com/Braden1996/BetterGoToFile/actions/workflows/checks.yml">
-    <img
-      alt="Checks status"
-      src="https://img.shields.io/github/actions/workflow/status/Braden1996/BetterGoToFile/checks.yml?branch=master&style=flat-square&label=checks&logo=githubactions&logoColor=white"
-    />
-  </a>
-  <a href="https://github.com/Braden1996/BetterGoToFile/releases/latest">
-    <img
-      alt="Latest GitHub release"
-      src="https://img.shields.io/github/v/release/Braden1996/BetterGoToFile?sort=semver&style=flat-square&label=Release&logo=github"
-    />
-  </a>
-  <a href="https://github.com/Braden1996/BetterGoToFile/releases/latest">
-    <img
-      alt="Download latest VSIX from GitHub Releases"
-      src="https://img.shields.io/badge/Download-Latest%20VSIX-0969da?style=flat-square&logo=github"
-    />
-  </a>
-</p>
+- **Specific intent still wins.** Every query token still has to match, and exact path or basename intent remains the strongest signal.
+- **Ambiguous queries get smarter.** Frecency, active-file context, open tabs, and Git reranking matter most when text alone is not enough, then back off as intent becomes explicit.
+- **Git favors real feature overlap.** Current worktree changes, package-scoped history, and inferred teammate activity surface meaningful code areas instead of noisy shared package roots.
+- **Monorepo results stay readable.** Package-aware ranking and path rendering make duplicate filenames easier to distinguish and faster to scan.
 
 ## Install
 
@@ -112,6 +108,8 @@ Replace the default `Cmd+P` picker with Better Go To File:
 </details>
 
 ## How It Works
+
+The short version: text narrows the pool, then context breaks ties. Better Go To File stays predictable for explicit queries and becomes much more helpful when the query is broad.
 
 Every search goes through a few layers:
 

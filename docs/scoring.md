@@ -80,7 +80,13 @@ Important details:
 
 - Boundary means start-of-string, after `/`, `\`, `-`, `_`, `.`, space, or a camelCase transition.
 - Package matching uses the package directory name, not the entire package path. For `packages/runtimes/mobile-app`, the package match target is `mobile-app`.
-- Exact and prefix categories start from large preset constants and subtract length or position penalties.
+- Exact and prefix categories start from large preset constants and subtract length and position penalties. Each match type has its own position multiplier:
+  - Basename boundary: `-boundaryIndex * 6 - basename.length`
+  - Basename substring: `-substringIndex * 8 - basename.length`
+  - Path boundary: `-boundaryIndex * 4 - relativePath.length * 0.2`
+  - Path substring: `-substringIndex * 3 - relativePath.length * 0.1`
+  - Package boundary: `-boundaryIndex * 9`
+  - Package substring: `-substringIndex * 7`
 - Fuzzy matching rewards:
   - each matched character
   - matches near the start
@@ -147,7 +153,28 @@ Frecency is persisted to disk and decays over time.
   - `lastAccessed`
   - `accessCount`
 
-Only useful entries are kept when persisting. Very cold entries are dropped unless they were accessed recently enough.
+Only useful entries are kept when persisting. Entries with a decayed score below `0.05` are dropped unless they were accessed within the last 4 half-life periods. After filtering, the store keeps at most `20000` records (sorted by current score).
+
+## Scoring Presets
+
+Five presets control the scoring parameters. The default is `balanced`.
+
+| Preset     | Half-life | Character                                                                        |
+| ---------- | --------- | -------------------------------------------------------------------------------- |
+| `balanced` | 10 days   | Prioritizes exact filename intent while keeping context boosts moderate          |
+| `exact`    | 7 days    | Biases heavily toward exact and prefix matches with lighter contextual reranking |
+| `recent`   | 21 days   | Pushes recently and explicitly opened files higher, especially while browsing    |
+| `nearby`   | 10 days   | Favors files close to the active editor, package, and directory tree             |
+| `fuzzy`    | 12 days   | Handles abbreviated and loose queries more aggressively                          |
+
+Key differences from `balanced`:
+
+- **exact**: Higher exact/prefix lexical scores, lower fuzzy bonuses, reduced frecency and context multipliers.
+- **recent**: Higher frecency multipliers (query: 220, browse: 360 vs 145/180), heavier visit weights (`implicitOpenWeight = 2`, `explicitOpenWeight = 4`), shorter dwell threshold (`editorDwellMs = 700`), and a shorter duplicate window (`duplicateVisitWindowMs = 8000`).
+- **nearby**: Strongest directory proximity boosts (`sameDirectoryQueryBoost = 220`, `sharedPrefixSegmentQueryBoost = 95`), higher open tab and active file boosts, and slightly elevated path-level lexical scores.
+- **fuzzy**: Highest fuzzy bonuses (`basenameFuzzyBonus = 2500`, `pathFuzzyBonus = 1500`), higher substring scores, and lower exact/prefix scores.
+
+All presets except `recent` share the default visit tracking parameters. Every preset value can be overridden per-user through `betterGoToFile.scoring.customPreset`.
 
 ## Git Scoring
 
@@ -170,12 +197,14 @@ This means Git priors matter most when the lexical pass returns a broad ambiguou
 
 ### Contributor prior
 
-Contributor scoring mixes:
+Contributor scoring mixes four components with fixed weights:
 
-- exact file lineage weights
-- teammate file lineage weights
-- ownership share
-- scoped area-prefix weights
+`total = 1.8 * areaPrior + 1.4 * filePrior + 1.0 * teamPrior + 0.8 * ownerPrior`
+
+- `areaPrior`: scoped area-prefix weights from teammate relationships
+- `filePrior`: exact file lineage weights for the contributor
+- `teamPrior`: teammate file lineage weights
+- `ownerPrior`: ownership share
 
 The important area-propagation rules are:
 
@@ -188,8 +217,11 @@ The important area-propagation rules are:
   - distance from the leaf directory, using `0.5^distanceFromLeaf`
   - subtree breadth, using `1 / sqrt(subtreeFileCount(area))`
 - Those ancestor weights are normalized per file, so narrow feature directories get most of the mass and broad directories are heavily diluted.
-- After aggregation across commits, contributor area vectors are transformed with `log1p(weight) * inverseContributorFrequency(area)`, where the inverse-contributor-frequency term is BM25-like and downweights areas touched by many contributors.
-- Contributor relationship similarity is `0.7 * fast cosine + 0.3 * slow cosine`, then scaled by recent activity and a soft broadness penalty of `1 / (1 + broadness)`.
+- Contributor area weights are accumulated with two decay rates — a fast half-life of 30 days and a slow half-life of 365 days. File lineage weights similarly use a fast half-life of 14 days and a slow half-life of 120 days.
+- After aggregation across commits, contributor area vectors are transformed with `log1p(weight) * inverseContributorFrequency(area)`, where the inverse-contributor-frequency term is BM25-like (`log(1 + (N - df + 0.5) / (df + 0.5))`) and downweights areas touched by many contributors.
+- Contributor relationship similarity is `0.7 * fast cosine + 0.3 * slow cosine`, then scaled by an activity factor and a soft broadness penalty of `1 / (1 + broadness)`.
+- The activity factor uses cosine decay: full weight for contributors active within the last 30 days, cosine-shaped decay from 30 to 120 days (`0.5 * (1 + cos(π * normalizedAge))`), and zero beyond 120 days.
+- Broadness itself is `clamp(0.7 * areaEntropy + 0.3 * noiseAverage, 0, 0.95)`, mixing the normalized entropy of the contributor's area distribution with a noise metric. Contributors who spread evenly across many areas get a higher broadness value and a stronger penalty.
 
 Example:
 
