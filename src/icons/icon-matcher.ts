@@ -6,7 +6,7 @@ import {
 } from "./icon-theme-parser";
 import type { IconThemeOverride } from "./types";
 
-export type ThemeIconMatchSource =
+type ThemeIconMatchSource =
   | "override.fileNames"
   | "fileNames"
   | "override.fileExtensions"
@@ -16,7 +16,7 @@ export type ThemeIconMatchSource =
   | "override.file"
   | "file";
 
-export interface ThemeIconMatch {
+interface ThemeIconMatch {
   readonly iconId: string;
   readonly kind: "specific" | "default";
   readonly source: ThemeIconMatchSource;
