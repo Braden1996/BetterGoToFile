@@ -2,7 +2,7 @@
   "name": "better-go-to-file",
   "displayName": "Better Go To File",
   "version": "0.0.1",
-  "description": "A custom Go To File popup with tunable scoring.",
+  "description": "A smarter, more powerful file finder for VSCode based IDEs.",
   "categories": [
     "Other"
   ],
