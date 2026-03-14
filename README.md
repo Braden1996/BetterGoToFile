@@ -1,5 +1,53 @@
 # Better Go To File
 
+<p align="center">
+  <a href="https://marketplace.visualstudio.com/items?itemName=Braden.better-go-to-file">
+    <img
+      alt="Visual Studio Marketplace version"
+      src="https://img.shields.io/visual-studio-marketplace/v/Braden.better-go-to-file?style=flat-square&label=VS%20Marketplace&logo=visualstudiocode&logoColor=white"
+    />
+  </a>
+  <a href="https://marketplace.visualstudio.com/items?itemName=Braden.better-go-to-file">
+    <img
+      alt="Visual Studio Marketplace installs"
+      src="https://img.shields.io/visual-studio-marketplace/i/Braden.better-go-to-file?style=flat-square&label=Installs&logo=visualstudiocode&logoColor=white"
+    />
+  </a>
+  <a href="https://open-vsx.org/extension/Braden/better-go-to-file">
+    <img
+      alt="Open VSX version"
+      src="https://img.shields.io/open-vsx/v/Braden/better-go-to-file?style=flat-square&label=Open%20VSX"
+    />
+  </a>
+  <a href="https://open-vsx.org/extension/Braden/better-go-to-file">
+    <img
+      alt="Open VSX downloads"
+      src="https://img.shields.io/open-vsx/dt/Braden/better-go-to-file?style=flat-square&label=Downloads"
+    />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/Braden1996/BetterGoToFile/actions/workflows/checks.yml">
+    <img
+      alt="Checks status"
+      src="https://img.shields.io/github/actions/workflow/status/Braden1996/BetterGoToFile/checks.yml?branch=master&style=flat-square&label=checks&logo=githubactions&logoColor=white"
+    />
+  </a>
+  <a href="https://github.com/Braden1996/BetterGoToFile/releases/latest">
+    <img
+      alt="Latest GitHub release"
+      src="https://img.shields.io/github/v/release/Braden1996/BetterGoToFile?sort=semver&style=flat-square&label=Release&logo=github"
+    />
+  </a>
+  <a href="https://github.com/Braden1996/BetterGoToFile/releases/latest">
+    <img
+      alt="Download latest VSIX from GitHub Releases"
+      src="https://img.shields.io/badge/Download-Latest%20VSIX-0969da?style=flat-square&logo=github"
+    />
+  </a>
+</p>
+
 ![Better Go To File banner showing before-and-after file search results](assets/banner.png)
 
 VSCode is great, but the Go to File (`⌘ + P`) menu's naive fuzzy search starts to become a friction point inside larger projects, especially monorepos where filenames can often be generic (e.g. `routes.ts`, `button.tsx`).
