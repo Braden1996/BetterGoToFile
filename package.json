@@ -6,6 +6,11 @@
   "categories": [
     "Other"
   ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Braden1996/BetterGoToFile.git"
+  },
   "publisher": "Braden",
   "main": "./out/extension.js",
   "scripts": {
