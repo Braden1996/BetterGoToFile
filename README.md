@@ -1,10 +1,14 @@
 # Better Go To File
 
-VSCode is great, but the Go to File (`⌘ + P`) menu's naive fuzzy search starts to become a friction point inside large monorepos (too many generic named files etc).
+![Better Go To File banner showing before-and-after file search results](assets/banner.png)
 
-Better Go To File aims to reconstruct this Go to File menu but employs a more powerful scoring algorithm behind the scenes; one that considers [frecency](https://en.wikipedia.org/wiki/Frecency), Git author relationships to infer team-mates and their touched files, and a few other heuristics.
+VSCode is great, but the Go to File (`⌘ + P`) menu's naive fuzzy search starts to become a friction point inside larger projects, especially monorepos where filenames can often be generic (e.g. `routes.ts`, `button.tsx`).
 
-As a bonus, when display search items, it truncates paths from the left but excludes the package name.
+Better Go To File improves on this by using a more powerful scoring algorithm behind the scenes; one that considers [frecency](https://en.wikipedia.org/wiki/Frecency), Git file-tree insights that infer team-mates and their other touched files, and a few other heuristics. For short/empty queries, we use just the frecency score.
+
+It also improves search item row itself by truncating paths from the left, but excluding the monorepo package name, and also truncating the file-name if it's too long.
+
+After installing the extension and opening a project, it'll scan your workspace (persisting a cache for future boots). You can see the progress of this in the Status Bar; on hover you'll also see some extra information like the Contributor Relationships (an ordered list of the Git contributors we infer as your team-mates).
 
 ## Keyboard Shortcuts
 
