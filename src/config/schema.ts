@@ -23,17 +23,6 @@ export interface PickerConfig {
   readonly description: PickerDescriptionConfig;
 }
 
-export interface GitignoredAutoConfig {
-  readonly minQueryLength: number;
-  readonly minTokenCount: number;
-  readonly revealOnPathSeparator: boolean;
-}
-
-export interface GitignoredConfig {
-  readonly visibility: GitignoredVisibility;
-  readonly auto: GitignoredAutoConfig;
-}
-
 export interface WorkspaceIndexConfig {
   readonly fileGlob: string;
   readonly excludedDirectories: readonly string[];
@@ -74,21 +63,13 @@ export interface RankingContextConfig {
   readonly frecencyQueryMultiplier: number;
   readonly frecencyBrowseMultiplier: number;
   readonly trackedQueryBoost: number;
-  readonly trackedBrowseBoost: number;
   readonly ignoredQueryPenalty: number;
-  readonly ignoredBrowsePenalty: number;
   readonly untrackedQueryPenalty: number;
-  readonly untrackedBrowsePenalty: number;
   readonly openQueryBoost: number;
-  readonly openBrowseBoost: number;
   readonly activeQueryBoost: number;
-  readonly activeBrowseBoost: number;
   readonly sameDirectoryQueryBoost: number;
-  readonly sameDirectoryBrowseBoost: number;
   readonly sharedPrefixSegmentQueryBoost: number;
-  readonly sharedPrefixSegmentBrowseBoost: number;
   readonly sharedPrefixSingleQueryBoost: number;
-  readonly sharedPrefixSingleBrowseBoost: number;
 }
 
 export interface RankingConfig {
@@ -107,7 +88,7 @@ export interface ScoringSettingsConfig {
 
 export interface BetterGoToFileConfig {
   readonly picker: PickerConfig;
-  readonly gitignored: GitignoredConfig;
+  readonly gitignored: GitignoredVisibility;
   readonly workspaceIndex: WorkspaceIndexConfig;
   readonly scoring: ScoringSettingsConfig;
   readonly frecency: FrecencyConfig;
@@ -133,14 +114,7 @@ export const DEFAULT_BETTER_GO_TO_FILE_CONFIG: BetterGoToFileConfig = {
       minDescriptionWidthUnits: 16,
     },
   },
-  gitignored: {
-    visibility: "auto",
-    auto: {
-      minQueryLength: 12,
-      minTokenCount: 2,
-      revealOnPathSeparator: true,
-    },
-  },
+  gitignored: "auto",
   workspaceIndex: {
     fileGlob: "**/*",
     excludedDirectories: [

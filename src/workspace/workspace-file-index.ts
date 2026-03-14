@@ -55,6 +55,11 @@ interface GitWorkspacePathsResult {
   readonly isTruncated: boolean;
 }
 
+interface GitWorkspaceFolderTarget {
+  readonly repoRootPath: string;
+  readonly repoRelativeFolderPath: string;
+}
+
 export class WorkspaceFileIndex implements vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<void>();
   private readonly entriesByPath = new Map<string, FileEntry>();
@@ -122,8 +127,8 @@ export class WorkspaceFileIndex implements vscode.Disposable {
     return this.sortedEntries;
   }
 
-  getEntry(relativePath: string): FileEntry | undefined {
-    return this.entriesByPath.get(relativePath);
+  getEntry(identityPath: string): FileEntry | undefined {
+    return this.entriesByPath.get(identityPath);
   }
 
   getStatus(): WorkspaceFileIndexStatus {
@@ -237,12 +242,27 @@ export class WorkspaceFileIndex implements vscode.Disposable {
 
     const scanBudget = createScanBudget(this.config.maxFileCount);
     const nextSnapshots = new Map<string, WorkspaceFolderIndexSnapshot>();
+    const gitTargets = await this.resolveGitWorkspaceFolderTargets(folders);
+    const repoPathsByRoot = await this.loadRepoGitPathsByRoot(gitTargets);
 
     for (const folder of folders) {
-      const snapshot =
-        scanBudget.remainingFiles !== undefined && scanBudget.remainingFiles <= 0
-          ? createWorkspaceFolderIndexSnapshot(folder, createEmptyIndexedRoot(folder.uri), true)
-          : await this.indexWorkspaceFolder(folder, scanBudget);
+      let snapshot: WorkspaceFolderIndexSnapshot;
+
+      if (scanBudget.remainingFiles !== undefined && scanBudget.remainingFiles <= 0) {
+        snapshot = createWorkspaceFolderIndexSnapshot(
+          folder,
+          createEmptyIndexedRoot(folder.uri),
+          true,
+        );
+      } else {
+        const gitTarget = gitTargets.get(folder.uri.fsPath);
+        const repoPaths = gitTarget ? repoPathsByRoot.get(gitTarget.repoRootPath) : undefined;
+
+        snapshot =
+          gitTarget && repoPaths
+            ? this.createGitWorkspaceFolderSnapshot(folder, gitTarget, repoPaths, scanBudget)
+            : await this.scanWorkspaceFolder(folder, scanBudget);
+      }
 
       nextSnapshots.set(folder.uri.fsPath, snapshot);
     }
@@ -328,7 +348,7 @@ export class WorkspaceFileIndex implements vscode.Disposable {
     this.entriesByPath.clear();
 
     for (const entry of entries) {
-      this.entriesByPath.set(entry.relativePath, entry);
+      this.entriesByPath.set(entry.identityPath, entry);
     }
 
     this.sortedEntries = entries;
@@ -348,64 +368,6 @@ export class WorkspaceFileIndex implements vscode.Disposable {
       (await this.scanDirectoryTree(folder, "", scanBudget)) ?? createEmptyIndexedRoot(folder.uri);
 
     return createWorkspaceFolderIndexSnapshot(folder, root, scanBudget.didHitLimit);
-  }
-
-  private async indexWorkspaceFolder(
-    folder: vscode.WorkspaceFolder,
-    scanBudget: ScanBudget,
-  ): Promise<WorkspaceFolderIndexSnapshot> {
-    const gitSnapshot = await this.scanWorkspaceFolderFromGit(folder, scanBudget);
-
-    if (gitSnapshot) {
-      return gitSnapshot;
-    }
-
-    return this.scanWorkspaceFolder(folder, scanBudget);
-  }
-
-  private async scanWorkspaceFolderFromGit(
-    folder: vscode.WorkspaceFolder,
-    scanBudget: ScanBudget,
-  ): Promise<WorkspaceFolderIndexSnapshot | undefined> {
-    if (folder.uri.scheme !== "file") {
-      return undefined;
-    }
-
-    try {
-      const repoRootPath = await resolveRepoRoot(folder.uri.fsPath);
-      const workspaceFolderPath = normalizePath(folder.uri.fsPath);
-      const repoRelativeFolderPath = normalizePath(path.relative(repoRootPath, folder.uri.fsPath));
-
-      if (repoRelativeFolderPath.startsWith("..")) {
-        return undefined;
-      }
-
-      const gitPaths = await this.loadWorkspacePathsFromGit(
-        repoRootPath,
-        workspaceFolderPath,
-        repoRelativeFolderPath === "." ? "" : repoRelativeFolderPath,
-        scanBudget,
-      );
-      const root = createIndexedRootFromFilePaths(folder.uri, gitPaths.paths);
-
-      if (gitPaths.paths.length === 0) {
-        return createWorkspaceFolderIndexSnapshot(
-          folder,
-          createEmptyIndexedRoot(folder.uri),
-          gitPaths.isTruncated,
-        );
-      }
-
-      if (gitPaths.isTruncated) {
-        scanBudget.didHitLimit = true;
-      }
-
-      this.log?.(`Indexed ${gitPaths.paths.length} Git-listed files for ${folder.name}.`);
-
-      return createWorkspaceFolderIndexSnapshot(folder, root, gitPaths.isTruncated);
-    } catch {
-      return undefined;
-    }
   }
 
   private async scanDirectoryTree(
@@ -448,7 +410,7 @@ export class WorkspaceFileIndex implements vscode.Disposable {
         continue;
       }
 
-      if (!isFileEntry(fileType)) {
+      if (!isFileEntry(fileType) || isSymbolicLinkEntry(fileType)) {
         continue;
       }
 
@@ -508,21 +470,17 @@ export class WorkspaceFileIndex implements vscode.Disposable {
     }
   }
 
-  private async loadWorkspacePathsFromGit(
-    repoRootPath: string,
-    workspaceFolderPath: string,
+  private loadWorkspacePathsFromGit(
+    repoPaths: readonly string[],
     repoRelativeFolderPath: string,
     scanBudget: ScanBudget,
-  ): Promise<GitWorkspacePathsResult> {
+  ): GitWorkspacePathsResult {
     const relativePrefix = repoRelativeFolderPath ? `${repoRelativeFolderPath}/` : "";
     const paths: string[] = [];
     const seenPaths = new Set<string>();
     let isTruncated = false;
 
-    for (const repoRelativePath of await loadWorkspaceFilePathsFromGit(
-      repoRootPath,
-      repoRelativeFolderPath,
-    )) {
+    for (const repoRelativePath of repoPaths) {
       const normalizedRepoRelativePath = normalizePath(repoRelativePath.trim());
 
       if (!normalizedRepoRelativePath) {
@@ -562,13 +520,6 @@ export class WorkspaceFileIndex implements vscode.Disposable {
     }
 
     paths.sort((left, right) => left.localeCompare(right));
-
-    if (!paths.length && !repoRelativeFolderPath && workspaceFolderPath === repoRootPath) {
-      return {
-        paths,
-        isTruncated,
-      };
-    }
 
     return {
       paths,
@@ -680,6 +631,90 @@ export class WorkspaceFileIndex implements vscode.Disposable {
     this.initialReadyResolved = true;
     this.resolveInitialReady();
   }
+
+  private async resolveGitWorkspaceFolderTargets(
+    folders: readonly vscode.WorkspaceFolder[],
+  ): Promise<ReadonlyMap<string, GitWorkspaceFolderTarget>> {
+    const entries = await Promise.all(
+      folders.map(
+        async (folder) =>
+          [folder.uri.fsPath, await this.resolveGitWorkspaceFolderTarget(folder)] as const,
+      ),
+    );
+
+    return new Map(
+      entries.filter(([, target]) => target !== undefined) as readonly (readonly [
+        string,
+        GitWorkspaceFolderTarget,
+      ])[],
+    );
+  }
+
+  private async resolveGitWorkspaceFolderTarget(
+    folder: vscode.WorkspaceFolder,
+  ): Promise<GitWorkspaceFolderTarget | undefined> {
+    if (folder.uri.scheme !== "file") {
+      return undefined;
+    }
+
+    try {
+      const repoRootPath = await resolveRepoRoot(folder.uri.fsPath);
+      const repoRelativeFolderPath = normalizePath(path.relative(repoRootPath, folder.uri.fsPath));
+
+      if (repoRelativeFolderPath.startsWith("..")) {
+        return undefined;
+      }
+
+      return {
+        repoRootPath,
+        repoRelativeFolderPath: repoRelativeFolderPath === "." ? "" : repoRelativeFolderPath,
+      };
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async loadRepoGitPathsByRoot(
+    gitTargets: ReadonlyMap<string, GitWorkspaceFolderTarget>,
+  ): Promise<ReadonlyMap<string, readonly string[]>> {
+    const repoRoots = [...new Set([...gitTargets.values()].map((target) => target.repoRootPath))];
+    const entries = await Promise.all(
+      repoRoots.map(async (repoRootPath) => {
+        try {
+          return [repoRootPath, await loadWorkspaceFilePathsFromGit(repoRootPath)] as const;
+        } catch {
+          return undefined;
+        }
+      }),
+    );
+
+    return new Map(entries.filter(isDefined));
+  }
+
+  private createGitWorkspaceFolderSnapshot(
+    folder: vscode.WorkspaceFolder,
+    gitTarget: GitWorkspaceFolderTarget,
+    repoPaths: readonly string[],
+    scanBudget: ScanBudget,
+  ): WorkspaceFolderIndexSnapshot {
+    const gitPaths = this.loadWorkspacePathsFromGit(
+      repoPaths,
+      gitTarget.repoRelativeFolderPath,
+      scanBudget,
+    );
+    const root =
+      gitPaths.paths.length > 0
+        ? createIndexedRootFromFilePaths(folder.uri, gitPaths.paths)
+        : createEmptyIndexedRoot(folder.uri);
+
+    if (gitPaths.isTruncated) {
+      scanBudget.didHitLimit = true;
+    }
+
+    this.log?.(`Indexed ${gitPaths.paths.length} Git-listed files for ${folder.name}.`);
+
+    return createWorkspaceFolderIndexSnapshot(folder, root, gitPaths.isTruncated);
+  }
 }
 
 function createScanBudget(fileLimit: number | undefined): ScanBudget {
@@ -757,4 +792,8 @@ function isMissingFileError(error: unknown): boolean {
   }
 
   return /FileNotFound|EntryNotFound|no such file/i.test(error.message);
+}
+
+function isDefined<T>(value: T | undefined): value is T {
+  return value !== undefined;
 }

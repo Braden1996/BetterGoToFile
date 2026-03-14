@@ -37,21 +37,13 @@ interface RankingContextConfigOverride {
   readonly frecencyQueryMultiplier?: number;
   readonly frecencyBrowseMultiplier?: number;
   readonly trackedQueryBoost?: number;
-  readonly trackedBrowseBoost?: number;
   readonly ignoredQueryPenalty?: number;
-  readonly ignoredBrowsePenalty?: number;
   readonly untrackedQueryPenalty?: number;
-  readonly untrackedBrowsePenalty?: number;
   readonly openQueryBoost?: number;
-  readonly openBrowseBoost?: number;
   readonly activeQueryBoost?: number;
-  readonly activeBrowseBoost?: number;
   readonly sameDirectoryQueryBoost?: number;
-  readonly sameDirectoryBrowseBoost?: number;
   readonly sharedPrefixSegmentQueryBoost?: number;
-  readonly sharedPrefixSegmentBrowseBoost?: number;
   readonly sharedPrefixSingleQueryBoost?: number;
-  readonly sharedPrefixSingleBrowseBoost?: number;
 }
 
 export interface RankingConfigOverride {
@@ -88,21 +80,13 @@ const BALANCED_CONTEXT: RankingContextConfig = {
   frecencyQueryMultiplier: 145,
   frecencyBrowseMultiplier: 180,
   trackedQueryBoost: 80,
-  trackedBrowseBoost: 150,
   ignoredQueryPenalty: 1800,
-  ignoredBrowsePenalty: 3000,
   untrackedQueryPenalty: 1100,
-  untrackedBrowsePenalty: 2200,
   openQueryBoost: 120,
-  openBrowseBoost: 220,
   activeQueryBoost: 80,
-  activeBrowseBoost: 160,
   sameDirectoryQueryBoost: 90,
-  sameDirectoryBrowseBoost: 170,
   sharedPrefixSegmentQueryBoost: 28,
-  sharedPrefixSegmentBrowseBoost: 50,
   sharedPrefixSingleQueryBoost: 16,
-  sharedPrefixSingleBrowseBoost: 30,
 };
 
 const DEFAULT_VISITS: VisitTrackingConfig = {
@@ -152,21 +136,13 @@ const SCORING_PRESET_DEFINITIONS = {
           frecencyQueryMultiplier: 70,
           frecencyBrowseMultiplier: 110,
           trackedQueryBoost: 40,
-          trackedBrowseBoost: 80,
           ignoredQueryPenalty: 1800,
-          ignoredBrowsePenalty: 3000,
           untrackedQueryPenalty: 1100,
-          untrackedBrowsePenalty: 2200,
           openQueryBoost: 80,
-          openBrowseBoost: 140,
           activeQueryBoost: 60,
-          activeBrowseBoost: 100,
           sameDirectoryQueryBoost: 60,
-          sameDirectoryBrowseBoost: 120,
           sharedPrefixSegmentQueryBoost: 18,
-          sharedPrefixSegmentBrowseBoost: 32,
           sharedPrefixSingleQueryBoost: 8,
-          sharedPrefixSingleBrowseBoost: 16,
         },
       },
     },
@@ -188,21 +164,13 @@ const SCORING_PRESET_DEFINITIONS = {
           frecencyQueryMultiplier: 220,
           frecencyBrowseMultiplier: 360,
           trackedQueryBoost: 80,
-          trackedBrowseBoost: 150,
           ignoredQueryPenalty: 1800,
-          ignoredBrowsePenalty: 3000,
           untrackedQueryPenalty: 1100,
-          untrackedBrowsePenalty: 2200,
           openQueryBoost: 220,
-          openBrowseBoost: 380,
           activeQueryBoost: 160,
-          activeBrowseBoost: 300,
           sameDirectoryQueryBoost: 110,
-          sameDirectoryBrowseBoost: 180,
           sharedPrefixSegmentQueryBoost: 32,
-          sharedPrefixSegmentBrowseBoost: 56,
           sharedPrefixSingleQueryBoost: 18,
-          sharedPrefixSingleBrowseBoost: 34,
         },
       },
     },
@@ -230,21 +198,13 @@ const SCORING_PRESET_DEFINITIONS = {
           frecencyQueryMultiplier: 120,
           frecencyBrowseMultiplier: 190,
           trackedQueryBoost: 80,
-          trackedBrowseBoost: 150,
           ignoredQueryPenalty: 1800,
-          ignoredBrowsePenalty: 3000,
           untrackedQueryPenalty: 1100,
-          untrackedBrowsePenalty: 2200,
           openQueryBoost: 180,
-          openBrowseBoost: 300,
           activeQueryBoost: 140,
-          activeBrowseBoost: 240,
           sameDirectoryQueryBoost: 220,
-          sameDirectoryBrowseBoost: 340,
           sharedPrefixSegmentQueryBoost: 95,
-          sharedPrefixSegmentBrowseBoost: 140,
           sharedPrefixSingleQueryBoost: 55,
-          sharedPrefixSingleBrowseBoost: 80,
         },
       },
     },
@@ -272,21 +232,13 @@ const SCORING_PRESET_DEFINITIONS = {
           frecencyQueryMultiplier: 100,
           frecencyBrowseMultiplier: 160,
           trackedQueryBoost: 70,
-          trackedBrowseBoost: 130,
           ignoredQueryPenalty: 1800,
-          ignoredBrowsePenalty: 3000,
           untrackedQueryPenalty: 1100,
-          untrackedBrowsePenalty: 2200,
           openQueryBoost: 110,
-          openBrowseBoost: 200,
           activeQueryBoost: 80,
-          activeBrowseBoost: 150,
           sameDirectoryQueryBoost: 80,
-          sameDirectoryBrowseBoost: 140,
           sharedPrefixSegmentQueryBoost: 24,
-          sharedPrefixSegmentBrowseBoost: 42,
           sharedPrefixSingleQueryBoost: 14,
-          sharedPrefixSingleBrowseBoost: 24,
         },
       },
     },
@@ -436,21 +388,13 @@ function sanitizeRankingContextConfigOverride(
     frecencyQueryMultiplier: sanitizeNumber(value.frecencyQueryMultiplier, 0),
     frecencyBrowseMultiplier: sanitizeNumber(value.frecencyBrowseMultiplier, 0),
     trackedQueryBoost: sanitizeNumber(value.trackedQueryBoost, 0),
-    trackedBrowseBoost: sanitizeNumber(value.trackedBrowseBoost, 0),
     ignoredQueryPenalty: sanitizeNumber(value.ignoredQueryPenalty, 0),
-    ignoredBrowsePenalty: sanitizeNumber(value.ignoredBrowsePenalty, 0),
     untrackedQueryPenalty: sanitizeNumber(value.untrackedQueryPenalty, 0),
-    untrackedBrowsePenalty: sanitizeNumber(value.untrackedBrowsePenalty, 0),
     openQueryBoost: sanitizeNumber(value.openQueryBoost, 0),
-    openBrowseBoost: sanitizeNumber(value.openBrowseBoost, 0),
     activeQueryBoost: sanitizeNumber(value.activeQueryBoost, 0),
-    activeBrowseBoost: sanitizeNumber(value.activeBrowseBoost, 0),
     sameDirectoryQueryBoost: sanitizeNumber(value.sameDirectoryQueryBoost, 0),
-    sameDirectoryBrowseBoost: sanitizeNumber(value.sameDirectoryBrowseBoost, 0),
     sharedPrefixSegmentQueryBoost: sanitizeNumber(value.sharedPrefixSegmentQueryBoost, 0),
-    sharedPrefixSegmentBrowseBoost: sanitizeNumber(value.sharedPrefixSegmentBrowseBoost, 0),
     sharedPrefixSingleQueryBoost: sanitizeNumber(value.sharedPrefixSingleQueryBoost, 0),
-    sharedPrefixSingleBrowseBoost: sanitizeNumber(value.sharedPrefixSingleBrowseBoost, 0),
   });
 }
 

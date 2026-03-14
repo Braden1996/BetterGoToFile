@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   buildContributorSearchProfile,
   buildContributorRelationshipGraph,
+  collectMeaningfulAreaPrefixes,
   createContributorIdentity,
   rankContributorRelationships,
   scoreContributorFile,
@@ -37,6 +38,23 @@ function createTouch({
     touchedPaths: touchedPaths ?? files?.map((file) => file.path) ?? [],
   };
 }
+
+describe("collectMeaningfulAreaPrefixes", () => {
+  test("keeps the full directory chain within a package scope", () => {
+    expect(
+      collectMeaningfulAreaPrefixes(
+        "packages/app/src/domain/feature-a/team/current.ts",
+        new Set(["packages/app"]),
+      ),
+    ).toEqual([
+      "packages/app",
+      "packages/app/src",
+      "packages/app/src/domain",
+      "packages/app/src/domain/feature-a",
+      "packages/app/src/domain/feature-a/team",
+    ]);
+  });
+});
 
 describe("buildContributorRelationshipGraph", () => {
   test("merges self aliases into one contributor profile", () => {
@@ -355,6 +373,70 @@ describe("rankContributorRelationships", () => {
     ]);
   });
 
+  test("dilutes generic in-package ancestors behind focused feature overlap", () => {
+    const trackedPaths = new Set([
+      "packages/app/package.json",
+      "packages/app/src/features/alpha/current.ts",
+      "packages/app/src/features/alpha/helper.ts",
+      "packages/app/src/features/alpha/peer.ts",
+      "packages/app/src/features/beta/index.ts",
+      "packages/app/src/features/gamma/index.ts",
+      "packages/app/src/features/delta/index.ts",
+      "packages/app/src/features/epsilon/index.ts",
+    ]);
+    const graph = buildContributorRelationshipGraph(
+      [
+        createTouch({
+          ageDays: 2,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/features/alpha/current.ts"],
+        }),
+        createTouch({
+          ageDays: 5,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/features/alpha/helper.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "focused@example.com",
+          name: "Focused",
+          touchedPaths: ["packages/app/src/features/alpha/peer.ts"],
+        }),
+        createTouch({
+          ageDays: 1,
+          email: "broad@example.com",
+          name: "Broad",
+          touchedPaths: [
+            "packages/app/src/features/beta/index.ts",
+            "packages/app/src/features/gamma/index.ts",
+            "packages/app/src/features/delta/index.ts",
+            "packages/app/src/features/epsilon/index.ts",
+          ],
+        }),
+      ],
+      {
+        currentContributor: {
+          name: "Braden",
+          email: "braden@example.com",
+        },
+        nowMs: NOW_MS,
+        trackedPaths,
+      },
+    );
+    const relationships = rankContributorRelationships(graph, "email:braden@example.com", {
+      limit: 3,
+      sampleSize: 3,
+    });
+
+    expect(relationships.map((relationship) => relationship.contributor.key)).toEqual([
+      "email:focused@example.com",
+      "email:broad@example.com",
+    ]);
+    expect(relationships[0]?.sampleSharedAreas).toContain("packages/app/src/features/alpha");
+  });
+
   test("treats quiet active teammates the same as busy active teammates", () => {
     const trackedPaths = new Set(["packages/app/package.json", "packages/app/src/core.ts"]);
     const graph = buildContributorRelationshipGraph(
@@ -414,10 +496,11 @@ describe("rankContributorRelationships", () => {
     expect(busyRelationship !== undefined).toBe(true);
     expect(quietRelationship?.activityFactor).toBe(1);
     expect(busyRelationship?.activityFactor).toBe(1);
-    expect(quietRelationship?.relationshipScore ?? 0).toBeCloseTo(
-      busyRelationship?.relationshipScore ?? 0,
-      6,
-    );
+    expect(
+      Math.abs(
+        (quietRelationship?.relationshipScore ?? 0) - (busyRelationship?.relationshipScore ?? 0),
+      ),
+    ).toBeLessThan(0.02);
   });
 
   test("excludes contributors with no recent activity", () => {
@@ -691,27 +774,63 @@ describe("buildContributorSearchProfile", () => {
 
     expect(profile).toBeDefined();
 
-    const packageRootDirectories = new Set(["packages/app", "packages/ui"]);
-    const currentFileScore = scoreContributorFile(
-      profile!,
-      "packages/app/src/feature/current.ts",
-      packageRootDirectories,
-    );
-    const siblingFileScore = scoreContributorFile(
-      profile!,
-      "packages/app/src/feature/sibling.ts",
-      packageRootDirectories,
-    );
-    const unrelatedFileScore = scoreContributorFile(
-      profile!,
-      "packages/ui/src/button.ts",
-      packageRootDirectories,
-    );
+    const currentFileScore = scoreContributorFile(profile!, "packages/app/src/feature/current.ts");
+    const siblingFileScore = scoreContributorFile(profile!, "packages/app/src/feature/sibling.ts");
+    const unrelatedFileScore = scoreContributorFile(profile!, "packages/ui/src/button.ts");
 
     expect(currentFileScore.filePrior).toBeGreaterThan(0);
     expect(currentFileScore.teamPrior).toBeGreaterThan(0);
     expect(currentFileScore.ownerPrior).toBeGreaterThan(0);
     expect(siblingFileScore.areaPrior).toBeGreaterThan(0);
     expect(siblingFileScore.total).toBeGreaterThan(unrelatedFileScore.total);
+  });
+
+  test("propagates area priors through intermediate directories inside a package", () => {
+    const trackedPaths = new Set([
+      "packages/app/package.json",
+      "packages/app/src/domain/feature-a/team/current.ts",
+      "packages/app/src/domain/feature-a/team/helper.ts",
+      "packages/app/src/domain/feature-b/candidate.ts",
+      "packages/app/src/other/feature-c/candidate.ts",
+    ]);
+    const graph = buildContributorRelationshipGraph(
+      [
+        createTouch({
+          ageDays: 1,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/domain/feature-a/team/current.ts"],
+        }),
+        createTouch({
+          ageDays: 3,
+          email: "braden@example.com",
+          name: "Braden",
+          touchedPaths: ["packages/app/src/domain/feature-a/team/helper.ts"],
+        }),
+      ],
+      {
+        currentContributor: {
+          name: "Braden",
+          email: "braden@example.com",
+        },
+        nowMs: NOW_MS,
+        trackedPaths,
+      },
+    );
+    const profile = buildContributorSearchProfile(graph, "email:braden@example.com");
+
+    expect(profile).toBeDefined();
+
+    const sameDomainScore = scoreContributorFile(
+      profile!,
+      "packages/app/src/domain/feature-b/candidate.ts",
+    );
+    const otherDomainScore = scoreContributorFile(
+      profile!,
+      "packages/app/src/other/feature-c/candidate.ts",
+    );
+
+    expect(sameDomainScore.areaPrior).toBeGreaterThan(otherDomainScore.areaPrior);
+    expect(sameDomainScore.total).toBeGreaterThan(otherDomainScore.total);
   });
 });

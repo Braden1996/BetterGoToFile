@@ -1,22 +1,16 @@
-import {
-  DEFAULT_BETTER_GO_TO_FILE_CONFIG,
-  type GitignoredConfig,
-  type GitignoredVisibility,
-} from "../config/schema";
+import { DEFAULT_BETTER_GO_TO_FILE_CONFIG, type GitignoredVisibility } from "../config/schema";
 
 const EXACT_FILENAME_WITH_EXTENSION_QUERY = /^[^/\\\s]+\.[^/\\\s.]+$/;
 
 export function shouldIncludeGitignoredFile(
   query: string,
-  gitignored: GitignoredVisibility | GitignoredConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.gitignored,
+  gitignored: GitignoredVisibility = DEFAULT_BETTER_GO_TO_FILE_CONFIG.gitignored,
 ): boolean {
-  const config = normalizeGitignoredConfig(gitignored);
-
-  if (config.visibility === "show") {
+  if (gitignored === "show") {
     return true;
   }
 
-  if (config.visibility === "hide") {
+  if (gitignored === "hide") {
     return false;
   }
 
@@ -31,17 +25,4 @@ export function isSpecificQuery(query: string): boolean {
   }
 
   return EXACT_FILENAME_WITH_EXTENSION_QUERY.test(normalizedQuery);
-}
-
-function normalizeGitignoredConfig(
-  gitignored: GitignoredVisibility | GitignoredConfig,
-): GitignoredConfig {
-  if (typeof gitignored === "string") {
-    return {
-      visibility: gitignored,
-      auto: DEFAULT_BETTER_GO_TO_FILE_CONFIG.gitignored.auto,
-    };
-  }
-
-  return gitignored;
 }

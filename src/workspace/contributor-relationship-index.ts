@@ -1,7 +1,11 @@
 import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import * as vscode from "vscode";
+import {
+  CONTRIBUTOR_RELATIONSHIP_CACHE_VERSION,
+  shouldRestoreCachedContributorState,
+} from "./contributor-relationship-cache";
 import {
   buildContributorSearchProfile,
   buildContributorRelationshipGraph,
@@ -10,18 +14,18 @@ import {
   rankContributorRelationships,
   type ContributorSearchProfile,
   type ContributorIdentity,
+  type ContributorRelationshipGraph,
   type ContributorRelationship,
   type ContributorSelector,
   type ContributorSummary,
   type ContributorTouch,
   type ContributorTouchedFile,
 } from "./contributor-relationship-model";
-import { loadTrackedPaths, resolveRepoRoot, runGit } from "./git-utils";
-import { collectPackageRootDirectories } from "./package-root";
+import { loadGitIndexStamp, loadTrackedPaths, resolveRepoRoot, runGit } from "./git-utils";
 import { normalizePath } from "./workspace-path";
 
 const COMMIT_SEPARATOR = "\u001e";
-const CACHE_VERSION = 4;
+const CACHE_VERSION = CONTRIBUTOR_RELATIONSHIP_CACHE_VERSION;
 const CONTRIBUTOR_HISTORY_WINDOW_DAYS = 365;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const EMPTY_TOUCHED_PATHS: readonly string[] = [];
@@ -55,7 +59,6 @@ export interface WorkspaceContributorRelationshipSnapshot {
 }
 
 interface WorkspaceContributorSearchState {
-  readonly packageRootDirectories: ReadonlySet<string>;
   readonly profile: ContributorSearchProfile;
   readonly repoRootPath: string;
   readonly workspaceFolderPath: string;
@@ -63,6 +66,7 @@ interface WorkspaceContributorSearchState {
 
 interface CachedContributorSearchState {
   readonly contributorKey: string;
+  readonly areaSubtreeFileCounts: readonly [string, number][];
   readonly currentPathToLineageKey: readonly [string, string][];
   readonly fileWeights: readonly [string, number][];
   readonly ownerShares: readonly [string, number][];
@@ -81,6 +85,12 @@ interface CachedWorkspaceContributorRelationshipState {
   readonly version: number;
 }
 
+interface RepoContributorRelationshipState {
+  readonly graph?: ContributorRelationshipGraph;
+  readonly searchState?: WorkspaceContributorSearchState;
+  readonly snapshot: WorkspaceContributorRelationshipSnapshot;
+}
+
 interface WorkspaceContributorRelationshipState {
   readonly searchState?: WorkspaceContributorSearchState;
   readonly snapshot: WorkspaceContributorRelationshipSnapshot;
@@ -89,6 +99,7 @@ interface WorkspaceContributorRelationshipState {
 export class ContributorRelationshipIndex implements vscode.Disposable {
   private readonly emitter = new vscode.EventEmitter<void>();
   private readonly snapshots = new Map<string, Promise<WorkspaceContributorRelationshipState>>();
+  private readonly repoSnapshots = new Map<string, Promise<RepoContributorRelationshipState>>();
   private readonly states = new Map<string, WorkspaceContributorRelationshipState>();
   private readonly disposables: vscode.Disposable[] = [];
   private refreshTimer: ReturnType<typeof setTimeout> | undefined;
@@ -104,6 +115,7 @@ export class ContributorRelationshipIndex implements vscode.Disposable {
     const packedRefsWatcher = vscode.workspace.createFileSystemWatcher("**/.git/packed-refs");
     const invalidate = (): void => {
       this.snapshots.clear();
+      this.repoSnapshots.clear();
       this.states.clear();
       this.emitter.fire();
       this.debounceWarmSnapshots();
@@ -125,6 +137,7 @@ export class ContributorRelationshipIndex implements vscode.Disposable {
       packedRefsWatcher.onDidDelete(invalidate),
       vscode.workspace.onDidChangeWorkspaceFolders(() => {
         this.snapshots.clear();
+        this.repoSnapshots.clear();
         this.states.clear();
         this.emitter.fire();
         this.scheduleWarmSnapshots();
@@ -134,10 +147,30 @@ export class ContributorRelationshipIndex implements vscode.Disposable {
     this.scheduleWarmSnapshots();
   }
 
-  async inspectWorkspaceFolders(): Promise<readonly WorkspaceContributorRelationshipSnapshot[]> {
+  async ready(): Promise<void> {
     const folders = vscode.workspace.workspaceFolders ?? [];
 
-    return Promise.all(folders.map(async (folder) => (await this.getState(folder)).snapshot));
+    await Promise.allSettled(folders.map(async (folder) => this.getState(folder)));
+  }
+
+  async inspectWorkspaceFolders(): Promise<readonly WorkspaceContributorRelationshipSnapshot[]> {
+    return this.inspectWorkspaceFoldersForSelection();
+  }
+
+  async inspectWorkspaceFoldersForSelection(
+    selectedContributorKeysByWorkspaceFolderPath: ReadonlyMap<string, string> = new Map(),
+  ): Promise<readonly WorkspaceContributorRelationshipSnapshot[]> {
+    const folders = vscode.workspace.workspaceFolders ?? [];
+
+    return Promise.all(
+      folders.map(async (folder) => {
+        const selectedContributorKey = selectedContributorKeysByWorkspaceFolderPath.get(
+          folder.uri.fsPath,
+        );
+
+        return this.inspectWorkspaceFolder(folder, selectedContributorKey);
+      }),
+    );
   }
 
   getSearchState(workspaceFolderPath: string): WorkspaceContributorSearchState | undefined {
@@ -161,6 +194,7 @@ export class ContributorRelationshipIndex implements vscode.Disposable {
     }
 
     this.snapshots.clear();
+    this.repoSnapshots.clear();
     this.states.clear();
 
     for (const disposable of this.disposables) {
@@ -175,11 +209,7 @@ export class ContributorRelationshipIndex implements vscode.Disposable {
       return existingSnapshot;
     }
 
-    const snapshotPromise = loadWorkspaceContributorRelationshipState(
-      folder,
-      this.cacheDirectoryPath,
-      this.log,
-    )
+    const snapshotPromise = this.loadWorkspaceState(folder)
       .then((state) => {
         this.states.set(folder.uri.fsPath, state);
         this.emitter.fire();
@@ -194,6 +224,111 @@ export class ContributorRelationshipIndex implements vscode.Disposable {
     this.snapshots.set(folder.uri.fsPath, snapshotPromise);
 
     return snapshotPromise;
+  }
+
+  private async loadWorkspaceState(
+    folder: vscode.WorkspaceFolder,
+  ): Promise<WorkspaceContributorRelationshipState> {
+    if (folder.uri.scheme !== "file") {
+      return {
+        snapshot: createEmptySnapshot(folder, "not-git"),
+      };
+    }
+
+    let repoRootPath: string;
+
+    try {
+      repoRootPath = await resolveRepoRoot(folder.uri.fsPath);
+    } catch {
+      return {
+        snapshot: createEmptySnapshot(folder, "not-git"),
+      };
+    }
+
+    const repoState = await this.getRepoState(repoRootPath, folder);
+
+    return materializeWorkspaceContributorRelationshipState(folder, repoState);
+  }
+
+  private getRepoState(
+    repoRootPath: string,
+    folder: vscode.WorkspaceFolder,
+    options: { readonly requireGraph?: boolean } = {},
+  ): Promise<RepoContributorRelationshipState> {
+    const requireGraph = options.requireGraph ?? false;
+    const existingRepoSnapshot = this.repoSnapshots.get(repoRootPath);
+
+    if (existingRepoSnapshot && !requireGraph) {
+      return existingRepoSnapshot;
+    }
+
+    if (existingRepoSnapshot && requireGraph) {
+      return existingRepoSnapshot.then((state) => {
+        if (state.graph) {
+          return state;
+        }
+
+        return this.reloadRepoState(repoRootPath, folder, { preferCache: false });
+      });
+    }
+
+    return this.reloadRepoState(repoRootPath, folder, { preferCache: !requireGraph });
+  }
+
+  private reloadRepoState(
+    repoRootPath: string,
+    folder: vscode.WorkspaceFolder,
+    options: { readonly preferCache: boolean },
+  ): Promise<RepoContributorRelationshipState> {
+    const repoSnapshotPromise = loadRepoContributorRelationshipState(
+      folder,
+      repoRootPath,
+      this.cacheDirectoryPath,
+      this.log,
+      options,
+    ).catch((error) => {
+      this.repoSnapshots.delete(repoRootPath);
+      throw error;
+    });
+
+    this.repoSnapshots.set(repoRootPath, repoSnapshotPromise);
+
+    return repoSnapshotPromise;
+  }
+
+  private async inspectWorkspaceFolder(
+    folder: vscode.WorkspaceFolder,
+    selectedContributorKey?: string,
+  ): Promise<WorkspaceContributorRelationshipSnapshot> {
+    if (!selectedContributorKey) {
+      return (await this.getState(folder)).snapshot;
+    }
+
+    const state = await this.getState(folder);
+
+    if (state.snapshot.currentContributor?.key === selectedContributorKey) {
+      return state.snapshot;
+    }
+
+    if (folder.uri.scheme !== "file") {
+      return state.snapshot;
+    }
+
+    const repoRootPath = state.snapshot.repoRootPath;
+
+    if (!repoRootPath) {
+      return state.snapshot;
+    }
+
+    const repoState = await this.getRepoState(repoRootPath, folder, {
+      requireGraph: true,
+    });
+
+    return materializeWorkspaceContributorRelationshipSnapshotForSelection(
+      folder,
+      repoState,
+      selectedContributorKey,
+    );
   }
 
   private debounceWarmSnapshots(): void {
@@ -216,60 +351,34 @@ export class ContributorRelationshipIndex implements vscode.Disposable {
   }
 }
 
-async function loadWorkspaceContributorRelationshipState(
+async function loadRepoContributorRelationshipState(
   folder: vscode.WorkspaceFolder,
+  repoRootPath: string,
   cacheDirectoryPath: string | undefined,
   log?: (message: string) => void,
-): Promise<WorkspaceContributorRelationshipState> {
-  if (folder.uri.scheme !== "file") {
-    return {
-      snapshot: createEmptySnapshot(folder, "not-git"),
-    };
-  }
-
-  let repoRootPath: string;
-
-  try {
-    repoRootPath = await resolveRepoRoot(folder.uri.fsPath);
-  } catch {
-    return {
-      snapshot: createEmptySnapshot(folder, "not-git"),
-    };
-  }
-
+  options: { readonly preferCache?: boolean } = {},
+): Promise<RepoContributorRelationshipState> {
   log?.(`Loading contributor relationships for ${folder.name}...`);
   const [configuredContributor, headCommit, indexStamp] = await Promise.all([
     loadConfiguredContributor(repoRootPath),
     loadHeadCommit(repoRootPath),
     loadGitIndexStamp(repoRootPath),
   ]);
-  const cachedState = await loadCachedState(
-    cacheDirectoryPath,
-    repoRootPath,
-    configuredContributor,
-    headCommit,
-    indexStamp,
-  );
+  const cachedState =
+    options.preferCache === false
+      ? undefined
+      : await loadCachedState(
+          cacheDirectoryPath,
+          repoRootPath,
+          configuredContributor,
+          headCommit,
+          indexStamp,
+        );
 
   if (cachedState) {
     log?.(`Restored contributor relationships for ${folder.name} from cache.`);
 
-    return {
-      snapshot: {
-        ...cachedState.snapshot,
-        configuredContributor,
-        repoRootPath,
-        workspaceFolderName: folder.name,
-        workspaceFolderPath: folder.uri.fsPath,
-      },
-      searchState: cachedState.searchState
-        ? {
-            ...cachedState.searchState,
-            repoRootPath,
-            workspaceFolderPath: folder.uri.fsPath,
-          }
-        : undefined,
-    };
+    return restoreCachedRepoState(cachedState, configuredContributor, repoRootPath);
   }
 
   const loadStartedAtMs = Date.now();
@@ -277,7 +386,6 @@ async function loadWorkspaceContributorRelationshipState(
     loadTrackedPaths(repoRootPath),
     loadContributorTouches(repoRootPath),
   ]);
-  const packageRootDirectories = collectPackageRootDirectories([...trackedPaths]);
   const loadElapsedMs = Date.now() - loadStartedAtMs;
   const buildStartedAtMs = Date.now();
   log?.(
@@ -299,7 +407,8 @@ async function loadWorkspaceContributorRelationshipState(
       topContributors,
       contributors: graph.contributors,
     };
-    const state: WorkspaceContributorRelationshipState = {
+    const state: RepoContributorRelationshipState = {
+      graph,
       snapshot,
     };
 
@@ -329,7 +438,8 @@ async function loadWorkspaceContributorRelationshipState(
       contributors: graph.contributors,
       topContributors,
     };
-    const state: WorkspaceContributorRelationshipState = {
+    const state: RepoContributorRelationshipState = {
+      graph,
       snapshot,
     };
 
@@ -385,11 +495,11 @@ async function loadWorkspaceContributorRelationshipState(
     graph,
     currentContributorSummary.contributor.key,
   );
-  const state: WorkspaceContributorRelationshipState = {
+  const state: RepoContributorRelationshipState = {
+    graph,
     snapshot,
     searchState: contributorProfile
       ? {
-          packageRootDirectories,
           profile: contributorProfile,
           repoRootPath,
           workspaceFolderPath: folder.uri.fsPath,
@@ -409,13 +519,6 @@ async function loadWorkspaceContributorRelationshipState(
   return state;
 }
 
-function createCacheContributorKey(contributor?: ContributorSelector): string {
-  const normalizedName = contributor?.name?.trim().toLowerCase() ?? "";
-  const normalizedEmail = contributor?.email?.trim().toLowerCase() ?? "";
-
-  return `${normalizedName}${FIELD_SEPARATOR}${normalizedEmail}`;
-}
-
 function createCacheFilePath(cacheDirectoryPath: string, repoRootPath: string): string {
   const repoHash = createHash("sha1").update(repoRootPath).digest("hex");
 
@@ -428,7 +531,7 @@ async function loadCachedState(
   configuredContributor: ContributorSelector | undefined,
   headCommit: string | undefined,
   indexStamp: string | undefined,
-): Promise<WorkspaceContributorRelationshipState | undefined> {
+): Promise<RepoContributorRelationshipState | undefined> {
   if (!cacheDirectoryPath || !headCommit) {
     return undefined;
   }
@@ -440,11 +543,11 @@ async function loadCachedState(
     ) as CachedWorkspaceContributorRelationshipState;
 
     if (
-      cachedValue.version !== CACHE_VERSION ||
-      cachedValue.headCommit !== headCommit ||
-      cachedValue.indexStamp !== indexStamp ||
-      createCacheContributorKey(cachedValue.configuredContributor) !==
-        createCacheContributorKey(configuredContributor)
+      !shouldRestoreCachedContributorState(cachedValue, {
+        configuredContributor,
+        headCommit,
+        indexStamp,
+      })
     ) {
       return undefined;
     }
@@ -453,8 +556,11 @@ async function loadCachedState(
       snapshot: cachedValue.snapshot,
       searchState: cachedValue.searchState
         ? {
-            packageRootDirectories: new Set(cachedValue.searchState.packageRootDirectories),
             profile: {
+              areaMetadata: {
+                packageRootDirectories: new Set(cachedValue.searchState.packageRootDirectories),
+                subtreeFileCounts: new Map(cachedValue.searchState.areaSubtreeFileCounts),
+              },
               contributorKey: cachedValue.searchState.contributorKey,
               currentPathToLineageKey: new Map(cachedValue.searchState.currentPathToLineageKey),
               fileWeights: new Map(cachedValue.searchState.fileWeights),
@@ -586,20 +692,6 @@ function formatContributorHistorySinceDate(nowMs = Date.now()): string {
   return new Date(nowMs - CONTRIBUTOR_HISTORY_WINDOW_DAYS * DAY_MS).toISOString().slice(0, 10);
 }
 
-async function loadGitIndexStamp(repoRootPath: string): Promise<string | undefined> {
-  try {
-    const rawIndexPath = (await runGit(repoRootPath, ["rev-parse", "--git-path", "index"])).trim();
-    const indexPath = path.isAbsolute(rawIndexPath)
-      ? rawIndexPath
-      : path.resolve(repoRootPath, rawIndexPath);
-    const indexStats = await stat(indexPath);
-
-    return `${indexStats.size}:${Math.trunc(indexStats.mtimeMs)}`;
-  } catch {
-    return undefined;
-  }
-}
-
 async function loadHeadCommit(repoRootPath: string): Promise<string | undefined> {
   try {
     const headCommit = (await runGit(repoRootPath, ["rev-parse", "HEAD"])).trim();
@@ -613,10 +705,41 @@ async function loadHeadCommit(repoRootPath: string): Promise<string | undefined>
 async function loadConfiguredContributor(
   repoRootPath: string,
 ): Promise<ContributorSelector | undefined> {
-  const [name, email] = await Promise.all([
-    readGitConfig(repoRootPath, "user.name"),
-    readGitConfig(repoRootPath, "user.email"),
-  ]);
+  let name: string | undefined;
+  let email: string | undefined;
+
+  try {
+    const stdout = await runGit(repoRootPath, ["config", "--get-regexp", "^user\\.(name|email)$"]);
+
+    for (const line of stdout.split("\n")) {
+      const trimmedLine = line.trim();
+
+      if (!trimmedLine) {
+        continue;
+      }
+
+      const separatorIndex = trimmedLine.search(/\s/);
+
+      if (separatorIndex <= 0) {
+        continue;
+      }
+
+      const key = trimmedLine.slice(0, separatorIndex);
+      const value = trimmedLine.slice(separatorIndex).trim();
+
+      if (!value) {
+        continue;
+      }
+
+      if (key === "user.name") {
+        name = value;
+      } else if (key === "user.email") {
+        email = value;
+      }
+    }
+  } catch {
+    return undefined;
+  }
 
   if (!name && !email) {
     return undefined;
@@ -627,24 +750,13 @@ async function loadConfiguredContributor(
     email,
   };
 }
-
-async function readGitConfig(repoRootPath: string, key: string): Promise<string | undefined> {
-  try {
-    const value = (await runGit(repoRootPath, ["config", "--get", key])).trim();
-
-    return value || undefined;
-  } catch {
-    return undefined;
-  }
-}
-
 async function saveCachedState(
   cacheDirectoryPath: string | undefined,
   repoRootPath: string,
   configuredContributor: ContributorSelector | undefined,
   headCommit: string | undefined,
   indexStamp: string | undefined,
-  state: WorkspaceContributorRelationshipState,
+  state: RepoContributorRelationshipState,
 ): Promise<void> {
   if (!cacheDirectoryPath || !headCommit) {
     return;
@@ -659,13 +771,18 @@ async function saveCachedState(
       indexStamp,
       searchState: state.searchState
         ? {
+            areaSubtreeFileCounts: [
+              ...state.searchState.profile.areaMetadata.subtreeFileCounts.entries(),
+            ],
             contributorKey: state.searchState.profile.contributorKey,
             currentPathToLineageKey: [
               ...state.searchState.profile.currentPathToLineageKey.entries(),
             ],
             fileWeights: [...state.searchState.profile.fileWeights.entries()],
             ownerShares: [...state.searchState.profile.ownerShares.entries()],
-            packageRootDirectories: [...state.searchState.packageRootDirectories],
+            packageRootDirectories: [
+              ...state.searchState.profile.areaMetadata.packageRootDirectories,
+            ],
             teamAreaWeights: [...state.searchState.profile.teamAreaWeights.entries()],
             teamFileWeights: [...state.searchState.profile.teamFileWeights.entries()],
             teammateCount: state.searchState.profile.teammateCount,
@@ -679,6 +796,83 @@ async function saveCachedState(
   } catch {
     // Cache writes are opportunistic; ignore failures and use cold rebuild next time.
   }
+}
+
+function materializeWorkspaceContributorRelationshipState(
+  folder: vscode.WorkspaceFolder,
+  state: RepoContributorRelationshipState,
+): WorkspaceContributorRelationshipState {
+  return {
+    snapshot: {
+      ...state.snapshot,
+      workspaceFolderName: folder.name,
+      workspaceFolderPath: folder.uri.fsPath,
+    },
+    searchState: state.searchState
+      ? {
+          ...state.searchState,
+          workspaceFolderPath: folder.uri.fsPath,
+        }
+      : undefined,
+  };
+}
+
+function materializeWorkspaceContributorRelationshipSnapshotForSelection(
+  folder: vscode.WorkspaceFolder,
+  state: RepoContributorRelationshipState,
+  selectedContributorKey: string,
+): WorkspaceContributorRelationshipSnapshot {
+  const graph = state.graph;
+
+  if (!graph) {
+    return materializeWorkspaceContributorRelationshipState(folder, state).snapshot;
+  }
+
+  const selectedContributorSummary = graph.contributors.find(
+    (summary) => summary.contributor.key === selectedContributorKey,
+  );
+
+  if (!selectedContributorSummary) {
+    return materializeWorkspaceContributorRelationshipState(folder, state).snapshot;
+  }
+
+  return {
+    ...materializeWorkspaceContributorRelationshipState(folder, state).snapshot,
+    status: "ready",
+    currentContributor: selectedContributorSummary.contributor,
+    currentContributorFileCount: selectedContributorSummary.touchedFileCount,
+    currentContributorCommitCount: selectedContributorSummary.touchedCommitCount,
+    currentContributorAreaFastWeight: selectedContributorSummary.areaFastWeight,
+    currentContributorAreaSlowWeight: selectedContributorSummary.areaSlowWeight,
+    currentContributorFileFastWeight: selectedContributorSummary.fileFastWeight,
+    currentContributorFileSlowWeight: selectedContributorSummary.fileSlowWeight,
+    contributorCount: graph.contributors.length,
+    contributors: graph.contributors,
+    relationships: rankContributorRelationships(graph, selectedContributorKey, {
+      limit: graph.contributors.length,
+    }),
+    topContributors: graph.contributors.slice(0, MAX_TOP_CONTRIBUTORS),
+  };
+}
+
+function restoreCachedRepoState(
+  cachedState: RepoContributorRelationshipState,
+  configuredContributor: ContributorSelector | undefined,
+  repoRootPath: string,
+): RepoContributorRelationshipState {
+  return {
+    snapshot: {
+      ...cachedState.snapshot,
+      configuredContributor,
+      repoRootPath,
+    },
+    searchState: cachedState.searchState
+      ? {
+          ...cachedState.searchState,
+          repoRootPath,
+        }
+      : undefined,
+  };
 }
 
 function createEmptySnapshot(

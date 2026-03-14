@@ -17,6 +17,7 @@ interface FrecencySnapshot {
 interface FrecencyStoreOptions {
   readonly halfLifeMs?: number;
   readonly flushDelayMs?: number;
+  readonly log?: (message: string) => void;
   readonly maxRecords?: number;
 }
 
@@ -33,6 +34,7 @@ const MIN_PERSISTED_SCORE = 0.05;
 export class FrecencyStore {
   private halfLifeMs: number;
   private flushDelayMs: number;
+  private log?: (message: string) => void;
   private maxRecords: number;
   private readonly records = new Map<string, FrecencyRecord>();
   private readonly readyPromise: Promise<void>;
@@ -46,6 +48,7 @@ export class FrecencyStore {
   ) {
     this.halfLifeMs = options.halfLifeMs ?? DEFAULT_HALF_LIFE_MS;
     this.flushDelayMs = options.flushDelayMs ?? DEFAULT_FLUSH_DELAY_MS;
+    this.log = options.log;
     this.maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
     this.readyPromise = this.load();
   }
@@ -57,6 +60,7 @@ export class FrecencyStore {
   updateOptions(options: FrecencyStoreOptions = {}): void {
     this.halfLifeMs = options.halfLifeMs ?? DEFAULT_HALF_LIFE_MS;
     this.flushDelayMs = options.flushDelayMs ?? DEFAULT_FLUSH_DELAY_MS;
+    this.log = options.log;
     this.maxRecords = options.maxRecords ?? DEFAULT_MAX_RECORDS;
 
     if (this.flushTimer) {
@@ -118,9 +122,11 @@ export class FrecencyStore {
 
     const now = Date.now();
     const snapshot = this.createSnapshot(now);
+    const temporaryFilePath = `${this.filePath}.${process.pid}.${now}.tmp`;
 
     await fs.mkdir(path.dirname(this.filePath), { recursive: true });
-    await fs.writeFile(this.filePath, JSON.stringify(snapshot, null, 2), "utf8");
+    await fs.writeFile(temporaryFilePath, JSON.stringify(snapshot, null, 2), "utf8");
+    await fs.rename(temporaryFilePath, this.filePath);
 
     this.dirty = false;
   }
@@ -148,9 +154,12 @@ export class FrecencyStore {
     } catch (error) {
       const nodeError = error as NodeJS.ErrnoException;
 
-      if (nodeError?.code !== "ENOENT") {
-        throw error;
+      if (nodeError?.code === "ENOENT") {
+        return;
       }
+
+      this.records.clear();
+      this.log?.(`Failed to restore frecency cache: ${toErrorMessage(error)}`);
     }
   }
 
@@ -201,6 +210,14 @@ export class FrecencyStore {
       records,
     };
   }
+}
+
+function toErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
 }
 
 export function decayFrecencyScore(

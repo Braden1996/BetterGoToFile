@@ -1,7 +1,7 @@
-import * as vscode from "vscode";
+import type * as vscode from "vscode";
 import { DEFAULT_BETTER_GO_TO_FILE_CONFIG, type BetterGoToFileConfig } from "../config/schema";
 import type { FileEntry, GitTrackingState } from "../workspace";
-import { buildFilePickDescription } from "./file-pick-description";
+import { buildFilePickPresentation } from "./file-pick-description";
 import { shouldIncludeGitignoredFile } from "./gitignored-visibility";
 import { formatDebugScoreDetail } from "./search-score-detail";
 import {
@@ -40,7 +40,7 @@ export function searchFileItems(
 ): FileSearchResult {
   const gitTrackingStateByPath = new Map<string, GitTrackingState>();
   const getGitTrackingState = (entry: FileEntry): GitTrackingState => {
-    const cachedState = gitTrackingStateByPath.get(entry.relativePath);
+    const cachedState = gitTrackingStateByPath.get(entry.identityPath);
 
     if (cachedState !== undefined) {
       return cachedState;
@@ -48,7 +48,7 @@ export function searchFileItems(
 
     const gitTrackingState = rankingContext.getGitTrackingState?.(entry) ?? "unknown";
 
-    gitTrackingStateByPath.set(entry.relativePath, gitTrackingState);
+    gitTrackingStateByPath.set(entry.identityPath, gitTrackingState);
     return gitTrackingState;
   };
   const visibleEntries: FileEntry[] = [];
@@ -112,23 +112,23 @@ export function searchFileItems(
       const gitTrackingState = getGitTrackingState(entry);
       const iconPath =
         gitTrackingState === "ignored" ? resolveGitignoredIcon?.(entry) : resolveFileIcon?.(entry);
+      const presentation = buildFilePickPresentation(
+        entry,
+        query,
+        gitTrackingState,
+        config.picker.description,
+      );
 
       return {
-        label: entry.basename,
-        description: buildFilePickDescription(
-          entry,
-          query,
-          gitTrackingState,
-          config.picker.description,
-        ),
+        label: presentation.label,
+        description: presentation.description,
         detail: options.debugScoring
           ? formatDebugScoreDetail(total, breakdown)
           : config.picker.showScores
             ? formatScoreDetail(total)
             : undefined,
         alwaysShow: true,
-        iconPath: iconPath ?? vscode.ThemeIcon.File,
-        resourceUri: iconPath ? undefined : entry.uri,
+        ...buildQuickPickItemIconProps(entry, iconPath),
         entry,
       };
     }),
@@ -159,18 +159,18 @@ function createQuickPickItems(
     const gitTrackingState = getGitTrackingState(entry);
     const iconPath =
       gitTrackingState === "ignored" ? resolveGitignoredIcon?.(entry) : resolveFileIcon?.(entry);
+    const presentation = buildFilePickPresentation(
+      entry,
+      query,
+      gitTrackingState,
+      config.picker.description,
+    );
 
     return {
-      label: entry.basename,
-      description: buildFilePickDescription(
-        entry,
-        query,
-        gitTrackingState,
-        config.picker.description,
-      ),
+      label: presentation.label,
+      description: presentation.description,
       alwaysShow: true,
-      iconPath: iconPath ?? vscode.ThemeIcon.File,
-      resourceUri: iconPath ? undefined : entry.uri,
+      ...buildQuickPickItemIconProps(entry, iconPath),
       entry,
     };
   });
@@ -193,4 +193,19 @@ export function shouldIncludeFileEntry(
 
 function formatScoreDetail(score: number): string {
   return `score ${Math.round(score).toLocaleString("en-US")}`;
+}
+
+function buildQuickPickItemIconProps(
+  entry: FileEntry,
+  iconPath: vscode.IconPath | undefined,
+): Pick<FilePickItem, "iconPath" | "resourceUri"> {
+  if (iconPath) {
+    return {
+      iconPath,
+    };
+  }
+
+  return {
+    resourceUri: entry.uri,
+  };
 }

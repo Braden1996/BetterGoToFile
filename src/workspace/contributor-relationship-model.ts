@@ -1,5 +1,11 @@
-import * as path from "node:path";
-import { collectPackageRootDirectories, findNearestPackageRoot } from "./package-root";
+import { collectPackageRootDirectories } from "./package-root";
+import {
+  buildAreaMetadata,
+  buildAreaPrefixAllocations,
+  collectMeaningfulAreaPrefixes as collectAreaPrefixes,
+  resolveScopeRootDirectory,
+  type AreaMetadata,
+} from "./area-metadata";
 
 const ACTIVITY_FULL_WEIGHT_DAYS = 30;
 const ACTIVITY_SLOPE_DAYS = 120;
@@ -16,7 +22,6 @@ const FILE_SLOW_HALF_LIFE_DAYS = 120;
 const GENERATED_PATH_PATTERN =
   /(?:^|\/)(?:dist|build|coverage|generated|gen|vendor|storybook-static)(?:\/|$)|(?:^|\/)[^/]+\.(?:lock|min\.js|snap)$/i;
 const MAX_RELEVANT_FILES_PER_COMMIT = 512;
-const MEANINGFUL_AREA_PREFIX_COUNT = 2;
 const MECHANICAL_MESSAGE_PATTERN =
   /\b(?:lint|format|prettier|eslint|codemod|mechanical|autofix|snapshot|lockfile|line endings?|line-ending normalization)\b/i;
 const RECENT_COMMIT_WINDOW_DAYS = 30;
@@ -81,7 +86,8 @@ export interface ContributorRelationship {
   readonly sampleSharedAreas: readonly string[];
 }
 
-interface ContributorRelationshipGraph {
+export interface ContributorRelationshipGraph {
+  readonly areaMetadata: AreaMetadata;
   readonly contributors: readonly ContributorSummary[];
   readonly contributorFiles: ReadonlyMap<string, ReadonlySet<string>>;
   readonly contributorCommitCounts: ReadonlyMap<string, number>;
@@ -100,6 +106,7 @@ interface ContributorRelationshipGraph {
 }
 
 export interface ContributorSearchProfile {
+  readonly areaMetadata: AreaMetadata;
   readonly contributorKey: string;
   readonly currentPathToLineageKey: ReadonlyMap<string, string>;
   readonly fileWeights: ReadonlyMap<string, number>;
@@ -124,6 +131,7 @@ interface BuildContributorRelationshipGraphOptions {
 }
 
 interface BuildContributorSearchProfileOptions {
+  readonly minRelationshipScore?: number;
   readonly teammateAreaBlend?: number;
   readonly teammateLimit?: number;
 }
@@ -173,6 +181,8 @@ interface SelfContributorResolution {
   readonly rawKeys: ReadonlySet<string>;
 }
 
+export { collectMeaningfulAreaPrefixes } from "./area-metadata";
+
 export function createContributorIdentity(name: string, email?: string): ContributorIdentity {
   const normalizedName = normalizeContributorName(name);
   const normalizedEmail = normalizeContributorEmail(email);
@@ -200,6 +210,10 @@ export function buildContributorRelationshipGraph(
   const nowMs = options.nowMs ?? Date.now();
   const trackedPaths = options.trackedPaths;
   const packageRootDirectories = collectPackageRootsForGraph(touches, trackedPaths);
+  const areaMetadata = buildAreaMetadata(
+    trackedPaths ? [...trackedPaths] : collectAreaMetadataPaths(touches),
+    packageRootDirectories,
+  );
   const rawIdentitiesByKey = new Map<string, ContributorIdentity>();
   const rawTouchCountsByKey = new Map<string, number>();
 
@@ -225,8 +239,8 @@ export function buildContributorRelationshipGraph(
   const lineageCurrentPaths = new Map<string, string>();
   const noiseTotals = new Map<string, number>();
   const noiseWeights = new Map<string, number>();
-  const contributorAreaFastWeights = new Map<string, Map<string, number>>();
-  const contributorAreaSlowWeights = new Map<string, Map<string, number>>();
+  const rawContributorAreaFastWeights = new Map<string, Map<string, number>>();
+  const rawContributorAreaSlowWeights = new Map<string, Map<string, number>>();
   const contributorFileFastWeights = new Map<string, Map<string, number>>();
   const contributorFileSlowWeights = new Map<string, Map<string, number>>();
   const pathToLineageKey = new Map<string, string>();
@@ -328,12 +342,12 @@ export function buildContributorRelationshipGraph(
         continue;
       }
 
-      const areaAllocations = buildAreaPrefixAllocations(file.areaPrefixes);
+      const areaAllocations = buildAreaPrefixAllocations(file.areaPrefixes, areaMetadata);
 
       if (areaFastDecay > 0) {
         for (const allocation of areaAllocations) {
           addContributorEdgeWeight(
-            contributorAreaFastWeights,
+            rawContributorAreaFastWeights,
             contributor.key,
             allocation.key,
             baseEventWeight * areaFastDecay * allocation.weight,
@@ -344,7 +358,7 @@ export function buildContributorRelationshipGraph(
       if (areaSlowDecay > 0) {
         for (const allocation of areaAllocations) {
           addContributorEdgeWeight(
-            contributorAreaSlowWeights,
+            rawContributorAreaSlowWeights,
             contributor.key,
             allocation.key,
             baseEventWeight * areaSlowDecay * allocation.weight,
@@ -367,6 +381,18 @@ export function buildContributorRelationshipGraph(
     }
   }
 
+  const areaInverseContributorFrequencies = computeAreaInverseContributorFrequencies(
+    rawContributorAreaFastWeights,
+    rawContributorAreaSlowWeights,
+  );
+  const contributorAreaFastWeights = transformContributorAreaWeights(
+    rawContributorAreaFastWeights,
+    areaInverseContributorFrequencies,
+  );
+  const contributorAreaSlowWeights = transformContributorAreaWeights(
+    rawContributorAreaSlowWeights,
+    areaInverseContributorFrequencies,
+  );
   const contributorAreaFastNorms = computeVectorNorms(contributorAreaFastWeights);
   const contributorAreaSlowNorms = computeVectorNorms(contributorAreaSlowWeights);
   const contributorBroadnesses = computeContributorBroadnesses(
@@ -392,6 +418,7 @@ export function buildContributorRelationshipGraph(
     .sort(compareContributorSummaries);
 
   return {
+    areaMetadata,
     contributors,
     contributorFiles,
     contributorCommitCounts,
@@ -436,6 +463,7 @@ export function buildContributorSearchProfile(
   }
 
   const teammateLimit = options.teammateLimit ?? SEARCH_TEAMMATE_LIMIT;
+  const minRelationshipScore = options.minRelationshipScore ?? 0;
   const teammateAreaBlend = options.teammateAreaBlend ?? SEARCH_TEAMMATE_AREA_BLEND;
   const teamFileWeights = new Map<string, number>();
   const relationships = rankContributorRelationships(graph, contributorKey, {
@@ -445,7 +473,7 @@ export function buildContributorSearchProfile(
   for (const relationship of relationships) {
     const similarity = relationship.relationshipScore;
 
-    if (similarity <= 0) {
+    if (similarity <= minRelationshipScore) {
       continue;
     }
 
@@ -481,6 +509,7 @@ export function buildContributorSearchProfile(
   }
 
   return {
+    areaMetadata: graph.areaMetadata,
     contributorKey,
     currentPathToLineageKey: graph.currentPathToLineageKey,
     fileWeights,
@@ -494,10 +523,9 @@ export function buildContributorSearchProfile(
 export function scoreContributorFile(
   profile: ContributorSearchProfile,
   filePath: string,
-  packageRootDirectories: ReadonlySet<string>,
 ): ContributorFilePrior {
-  const areaPrefixes = collectMeaningfulAreaPrefixes(filePath, packageRootDirectories);
-  const areaAllocations = buildAreaPrefixAllocations(areaPrefixes);
+  const areaPrefixes = collectAreaPrefixes(filePath, profile.areaMetadata.packageRootDirectories);
+  const areaAllocations = buildAreaPrefixAllocations(areaPrefixes, profile.areaMetadata);
   let areaPrior = 0;
 
   for (const allocation of areaAllocations) {
@@ -565,7 +593,9 @@ export function rankContributorRelationships(
         graph.contributorAreaSlowNorms.get(summary.contributor.key) ?? 0,
       );
       const activityFactor = computeContributorActivityFactor(summary.lastCommitAgeDays);
-      const broadnessPenalty = 1 - (graph.contributorBroadnesses.get(summary.contributor.key) ?? 0);
+      const broadnessPenalty = computeContributorBroadnessPenalty(
+        graph.contributorBroadnesses.get(summary.contributor.key) ?? 0,
+      );
       const relationshipScore =
         (RELATIONSHIP_FAST_WEIGHT * fastSimilarity + RELATIONSHIP_SLOW_WEIGHT * slowSimilarity) *
         activityFactor *
@@ -608,28 +638,6 @@ export function rankContributorRelationships(
     })
     .sort(compareContributorRelationships)
     .slice(0, relationshipLimit);
-}
-
-function buildAreaPrefixAllocations(
-  areaPrefixes: readonly string[],
-): readonly { key: string; weight: number }[] {
-  if (!areaPrefixes.length) {
-    return [];
-  }
-
-  const totalWeight = (areaPrefixes.length * (areaPrefixes.length + 1)) / 2;
-
-  return areaPrefixes.map((areaPrefix, index) => ({
-    key: areaPrefix,
-    weight: (index + 1) / totalWeight,
-  }));
-}
-
-export function collectMeaningfulAreaPrefixes(
-  filePath: string,
-  packageRootDirectories: ReadonlySet<string>,
-): readonly string[] {
-  return buildMeaningfulAreaPrefixes(filePath, packageRootDirectories);
 }
 
 function buildContributorAliasResolution(
@@ -794,6 +802,20 @@ function collectPackageRootsForGraph(
       return touch.touchedPaths.map((touchedPath) => touchedPath.trim());
     }),
   );
+}
+
+function collectAreaMetadataPaths(touches: readonly ContributorTouch[]): readonly string[] {
+  return touches.flatMap((touch) => {
+    if (touch.files?.length) {
+      return touch.files
+        .map((file) => normalizeRelativePath(file.path))
+        .filter((filePath): filePath is string => Boolean(filePath));
+    }
+
+    return touch.touchedPaths
+      .map((touchedPath) => normalizeRelativePath(touchedPath))
+      .filter((filePath): filePath is string => Boolean(filePath));
+  });
 }
 
 function collectRawTouchedFiles(touch: ContributorTouch): readonly RawTouchedFile[] {
@@ -1071,6 +1093,63 @@ function computeContributorBroadnesses(
   );
 }
 
+function computeContributorBroadnessPenalty(broadness: number): number {
+  return 1 / (1 + clamp(broadness, 0, 0.95));
+}
+
+function computeAreaInverseContributorFrequencies(
+  contributorAreaFastWeights: ReadonlyMap<string, ReadonlyMap<string, number>>,
+  contributorAreaSlowWeights: ReadonlyMap<string, ReadonlyMap<string, number>>,
+): ReadonlyMap<string, number> {
+  const areaContributorCounts = new Map<string, number>();
+  const contributorKeys = new Set([
+    ...contributorAreaFastWeights.keys(),
+    ...contributorAreaSlowWeights.keys(),
+  ]);
+
+  for (const contributorKey of contributorKeys) {
+    const seenAreaPrefixes = new Set([
+      ...(contributorAreaFastWeights.get(contributorKey)?.keys() ?? []),
+      ...(contributorAreaSlowWeights.get(contributorKey)?.keys() ?? []),
+    ]);
+
+    for (const areaPrefix of seenAreaPrefixes) {
+      areaContributorCounts.set(areaPrefix, (areaContributorCounts.get(areaPrefix) ?? 0) + 1);
+    }
+  }
+
+  const contributorCount = contributorKeys.size;
+
+  return new Map(
+    [...areaContributorCounts.entries()].map(([areaPrefix, contributorAreaCount]) => [
+      areaPrefix,
+      Math.log(1 + (contributorCount - contributorAreaCount + 0.5) / (contributorAreaCount + 0.5)),
+    ]),
+  );
+}
+
+function transformContributorAreaWeights(
+  contributorWeights: ReadonlyMap<string, ReadonlyMap<string, number>>,
+  areaInverseContributorFrequencies: ReadonlyMap<string, number>,
+): ReadonlyMap<string, ReadonlyMap<string, number>> {
+  return new Map(
+    [...contributorWeights.entries()].map(([contributorKey, weights]) => {
+      const transformedWeights = new Map<string, number>();
+
+      for (const [areaPrefix, weight] of weights.entries()) {
+        const inverseContributorFrequency = areaInverseContributorFrequencies.get(areaPrefix) ?? 0;
+        const transformedWeight = Math.log1p(weight) * inverseContributorFrequency;
+
+        if (transformedWeight > 0) {
+          transformedWeights.set(areaPrefix, transformedWeight);
+        }
+      }
+
+      return [contributorKey, transformedWeights];
+    }),
+  );
+}
+
 function computeCosineSimilarity(
   leftWeights: ReadonlyMap<string, number>,
   rightWeights: ReadonlyMap<string, number>,
@@ -1259,44 +1338,6 @@ function getCurrentPathForLineage(
   return lineageCurrentPaths.get(lineageKey) ?? fallbackPath;
 }
 
-function getDirectoryPrefixesWithinScope(
-  filePath: string,
-  scopeRootDirectory: string,
-): readonly string[] {
-  const fileDirectory = getRelativeDirectory(filePath);
-
-  if (!fileDirectory || fileDirectory === scopeRootDirectory) {
-    return [];
-  }
-
-  const scopePrefix = scopeRootDirectory ? `${scopeRootDirectory}/` : "";
-  const relativeDirectory = fileDirectory.startsWith(scopePrefix)
-    ? fileDirectory.slice(scopePrefix.length)
-    : fileDirectory;
-  const segments = relativeDirectory.split("/").filter(Boolean);
-  const directories: string[] = [];
-  let currentDirectory = scopeRootDirectory;
-
-  for (const segment of segments) {
-    currentDirectory = currentDirectory ? `${currentDirectory}/${segment}` : segment;
-    directories.push(currentDirectory);
-  }
-
-  return directories;
-}
-
-function getRelativeDirectory(filePath: string): string {
-  const directory = path.posix.dirname(filePath);
-
-  return directory === "." ? "" : directory;
-}
-
-function getTopLevelScopeRootDirectory(filePath: string): string | undefined {
-  const segments = filePath.split("/").filter(Boolean);
-
-  return segments.length > 1 ? segments[0] : undefined;
-}
-
 function looksLikeBotContributor(contributor: ContributorIdentity): boolean {
   return (
     BOT_CONTRIBUTOR_PATTERN.test(contributor.name) ||
@@ -1363,7 +1404,7 @@ function normalizeTouchedFiles(
       rawTouchedFile.addedLineCount,
       rawTouchedFile.deletedLineCount,
     );
-    const areaPrefixes = buildMeaningfulAreaPrefixes(currentPath, packageRootDirectories);
+    const areaPrefixes = collectAreaPrefixes(currentPath, packageRootDirectories);
     const existingFile = filesByLineage.get(lineageKey);
 
     filesByLineage.set(lineageKey, {
@@ -1471,41 +1512,6 @@ function pickCanonicalContributorName(
       )
       .at(0)?.[0] ?? "Unknown Contributor"
   );
-}
-
-function resolveScopeRootDirectory(
-  filePath: string,
-  packageRootDirectories: ReadonlySet<string>,
-): string | undefined {
-  const packageRootDirectory = findNearestPackageRoot(
-    getRelativeDirectory(filePath),
-    packageRootDirectories,
-  );
-
-  if (packageRootDirectory) {
-    return packageRootDirectory;
-  }
-
-  return getTopLevelScopeRootDirectory(filePath);
-}
-
-function buildMeaningfulAreaPrefixes(
-  filePath: string,
-  packageRootDirectories: ReadonlySet<string>,
-): readonly string[] {
-  const scopeRootDirectory = resolveScopeRootDirectory(filePath, packageRootDirectories);
-
-  if (!scopeRootDirectory) {
-    return [];
-  }
-
-  const directoriesWithinScope = getDirectoryPrefixesWithinScope(filePath, scopeRootDirectory);
-  const meaningfulDirectories =
-    directoriesWithinScope.length <= MEANINGFUL_AREA_PREFIX_COUNT
-      ? directoriesWithinScope
-      : directoriesWithinScope.slice(-MEANINGFUL_AREA_PREFIX_COUNT);
-
-  return [scopeRootDirectory, ...meaningfulDirectories];
 }
 
 function getAliasableContributorNameKey(contributor: ContributorIdentity): string | undefined {

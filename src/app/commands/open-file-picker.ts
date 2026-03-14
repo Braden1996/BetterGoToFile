@@ -48,8 +48,7 @@ export async function showBetterGoToFile(
   let hasLockedSessionEntries = shouldLockEntries();
 
   quickPick.title = formatFilePickerTitle(true);
-  quickPick.placeholder =
-    "Search files, content, and symbols (append : to go to line or @ to go to symbol)";
+  quickPick.placeholder = "Search by file name or path";
   quickPick.matchOnDescription = true;
   quickPick.matchOnDetail = false;
   quickPick.ignoreFocusOut = false;
@@ -90,7 +89,7 @@ export async function showBetterGoToFile(
       hasEntries: sessionEntries.length > 0,
       isIndexing: status.index.isIndexing,
       isRestoringSnapshot: status.index.isRestoringSnapshot,
-      isReadyForPicker: runtime.isReadyForPicker(),
+      pickerReadiness: status.pickerReadiness,
       query,
     });
 
@@ -221,7 +220,7 @@ export async function showBetterGoToFile(
         return;
       }
 
-      runtime.recordExplicitOpen(selectedItem.entry.relativePath);
+      runtime.recordExplicitOpen(selectedItem.entry.identityPath);
       quickPick.hide();
       await vscode.window.showTextDocument(selectedItem.entry.uri, { preview: false });
     }),

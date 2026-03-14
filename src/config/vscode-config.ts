@@ -64,22 +64,27 @@ function readBetterGoToFileConfig(): BetterGoToFileConfig {
 
   return {
     picker: defaults.picker,
-    gitignored: {
-      visibility: readGitignoredVisibility(
-        configuration,
-        "gitignored.visibility",
-        defaults.gitignored.visibility,
-      ),
-      auto: defaults.gitignored.auto,
-    },
+    gitignored: readGitignoredVisibility(
+      configuration,
+      "gitignored.visibility",
+      defaults.gitignored,
+    ),
     workspaceIndex: {
-      fileGlob: defaults.workspaceIndex.fileGlob,
+      fileGlob: readString(
+        configuration,
+        "workspaceIndex.fileGlob",
+        defaults.workspaceIndex.fileGlob,
+      ),
       excludedDirectories: readStringArray(
         configuration,
         "workspaceIndex.excludedDirectories",
         defaults.workspaceIndex.excludedDirectories,
       ),
-      maxFileCount: defaults.workspaceIndex.maxFileCount,
+      maxFileCount: readNonNegativeInteger(
+        configuration,
+        "workspaceIndex.maxFileCount",
+        defaults.workspaceIndex.maxFileCount,
+      ),
     },
     scoring: {
       preset: scoringPreset,
@@ -125,6 +130,30 @@ function readStringArray(
   }
 
   return normalized.size ? [...normalized] : fallback;
+}
+
+function readString(
+  configuration: vscode.WorkspaceConfiguration,
+  key: string,
+  fallback: string,
+): string {
+  const value = configuration.get<string>(key, fallback);
+
+  return typeof value === "string" && value.trim() ? value : fallback;
+}
+
+function readNonNegativeInteger(
+  configuration: vscode.WorkspaceConfiguration,
+  key: string,
+  fallback: number,
+): number {
+  const value = configuration.get<number>(key, fallback);
+
+  if (typeof value !== "number" || !Number.isFinite(value)) {
+    return fallback;
+  }
+
+  return Math.max(0, Math.round(value));
 }
 
 function readScoringPresetId(

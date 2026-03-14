@@ -8,16 +8,23 @@ const SHORT_QUERY_FRECENCY_TRANSITION_LENGTH = 3;
 export interface SearchCandidate {
   readonly basename: string;
   readonly relativePath: string;
+  readonly identityPath?: string;
   readonly directory: string;
   readonly packageRoot?: string;
+  readonly packageRootIdentity?: string;
+  readonly workspaceFolderPath?: string;
   readonly searchBasename: string;
   readonly searchPath: string;
 }
 
 export interface SearchContext<T extends SearchCandidate = SearchCandidate> {
   readonly activePath?: string;
+  readonly activeIdentityPath?: string;
   readonly activePackageRoot?: string;
+  readonly activePackageRootIdentity?: string;
+  readonly activeWorkspaceFolderPath?: string;
   readonly openPaths?: ReadonlySet<string>;
+  readonly openIdentityPaths?: ReadonlySet<string>;
   readonly getFrecencyScore?: (relativePath: string) => number;
   readonly getGitPrior?: (candidate: T) => number;
   readonly getGitTrackingState?: (candidate: T) => GitTrackingState;
@@ -265,7 +272,7 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
   }
 
   const ambiguity = computeAmbiguity(lexicalMatches.length);
-  const ranked: ScoredSearchCandidate<T>[] = [];
+  const topRanked: ScoredSearchCandidate<T>[] = [];
 
   for (const { candidate, lexicalBreakdown } of lexicalMatches) {
     const contextBreakdown = computeContextBreakdown(
@@ -282,22 +289,20 @@ export function scoreSearchCandidates<T extends SearchCandidate>(
     );
     const lexical = lexicalBreakdown.total;
 
-    ranked.push({
-      candidate,
-      lexical,
-      total: lexical + contextBreakdown.total + gitPriorBreakdown.total,
-      breakdown: {
-        lexical: lexicalBreakdown,
-        context: contextBreakdown,
-        gitPrior: gitPriorBreakdown,
+    insertRankedCandidate(
+      topRanked,
+      {
+        candidate,
+        lexical,
+        total: lexical + contextBreakdown.total + gitPriorBreakdown.total,
+        breakdown: {
+          lexical: lexicalBreakdown,
+          context: contextBreakdown,
+          gitPrior: gitPriorBreakdown,
+        },
       },
-    });
-  }
-
-  const topRanked: ScoredSearchCandidate<T>[] = [];
-
-  for (const result of ranked) {
-    insertRankedCandidate(topRanked, result, limit);
+      limit,
+    );
   }
 
   return topRanked;
@@ -314,7 +319,8 @@ function computeAmbiguity(candidateCount: number): number {
 function compareSearchCandidates(left: SearchCandidate, right: SearchCandidate): number {
   return (
     left.basename.localeCompare(right.basename) ||
-    left.relativePath.localeCompare(right.relativePath)
+    left.relativePath.localeCompare(right.relativePath) ||
+    getCandidateIdentity(left).localeCompare(getCandidateIdentity(right))
   );
 }
 
@@ -614,7 +620,10 @@ function computeContextBreakdown<T extends SearchCandidate>(
 ): ContextScoreBreakdown {
   const { context: config } = ranking;
   const contributions: ScoreContribution[] = [];
-  const frecencyScore = context.getFrecencyScore?.(candidate.relativePath) ?? 0;
+  const activePackageRootIdentity = context.activePackageRootIdentity ?? context.activePackageRoot;
+  const candidateIdentity = getCandidateIdentity(candidate);
+  const candidatePackageRootIdentity = getCandidatePackageRootIdentity(candidate);
+  const frecencyScore = context.getFrecencyScore?.(candidateIdentity) ?? 0;
   const addContribution = (label: string, score: number): void => {
     if (score !== 0) {
       contributions.push({ label, score });
@@ -645,24 +654,43 @@ function computeContextBreakdown<T extends SearchCandidate>(
     addContribution("untracked", -Math.round(config.untrackedQueryPenalty * queryStrength));
   }
 
-  if (context.openPaths?.has(candidate.relativePath)) {
+  if (
+    context.openIdentityPaths?.has(candidateIdentity) ||
+    context.openPaths?.has(candidate.relativePath)
+  ) {
     addContribution("open", Math.round(config.openQueryBoost * queryStrength));
   }
 
-  if (context.activePath === candidate.relativePath) {
+  if (
+    context.activeIdentityPath === candidateIdentity ||
+    (!context.activeIdentityPath && context.activePath === candidate.relativePath)
+  ) {
     addContribution("active", Math.round(config.activeQueryBoost * queryStrength));
   }
 
   if (
-    context.activePackageRoot &&
-    candidate.packageRoot &&
-    context.activePackageRoot === candidate.packageRoot &&
-    candidate.relativePath !== context.activePath
+    activePackageRootIdentity !== undefined &&
+    candidatePackageRootIdentity !== undefined &&
+    activePackageRootIdentity === candidatePackageRootIdentity &&
+    candidateIdentity !== context.activeIdentityPath &&
+    (!context.activeIdentityPath || candidate.relativePath !== context.activePath)
   ) {
     addContribution("same-pkg", Math.round(computeSamePackageBoost(config) * queryStrength));
   }
 
-  if (!activeDirectory || candidate.relativePath === context.activePath) {
+  if (
+    !activeDirectory ||
+    candidateIdentity === context.activeIdentityPath ||
+    (!context.activeIdentityPath && candidate.relativePath === context.activePath)
+  ) {
+    return finalizeContextScoreBreakdown(contributions);
+  }
+
+  if (
+    context.activeWorkspaceFolderPath &&
+    candidate.workspaceFolderPath &&
+    context.activeWorkspaceFolderPath !== candidate.workspaceFolderPath
+  ) {
     return finalizeContextScoreBreakdown(contributions);
   }
 
@@ -696,8 +724,11 @@ function computeContextScore<T extends SearchCandidate>(
   ranking: RankingConfig,
 ): number {
   const { context: config } = ranking;
+  const activePackageRootIdentity = context.activePackageRootIdentity ?? context.activePackageRoot;
+  const candidateIdentity = getCandidateIdentity(candidate);
+  const candidatePackageRootIdentity = getCandidatePackageRootIdentity(candidate);
   let total = 0;
-  const frecencyScore = context.getFrecencyScore?.(candidate.relativePath) ?? 0;
+  const frecencyScore = context.getFrecencyScore?.(candidateIdentity) ?? 0;
 
   if (frecencyScore > 0) {
     total += Math.round(
@@ -720,24 +751,43 @@ function computeContextScore<T extends SearchCandidate>(
     total -= Math.round(config.untrackedQueryPenalty * queryStrength);
   }
 
-  if (context.openPaths?.has(candidate.relativePath)) {
+  if (
+    context.openIdentityPaths?.has(candidateIdentity) ||
+    context.openPaths?.has(candidate.relativePath)
+  ) {
     total += Math.round(config.openQueryBoost * queryStrength);
   }
 
-  if (context.activePath === candidate.relativePath) {
+  if (
+    context.activeIdentityPath === candidateIdentity ||
+    (!context.activeIdentityPath && context.activePath === candidate.relativePath)
+  ) {
     total += Math.round(config.activeQueryBoost * queryStrength);
   }
 
   if (
-    context.activePackageRoot &&
-    candidate.packageRoot &&
-    context.activePackageRoot === candidate.packageRoot &&
-    candidate.relativePath !== context.activePath
+    activePackageRootIdentity !== undefined &&
+    candidatePackageRootIdentity !== undefined &&
+    activePackageRootIdentity === candidatePackageRootIdentity &&
+    candidateIdentity !== context.activeIdentityPath &&
+    (!context.activeIdentityPath || candidate.relativePath !== context.activePath)
   ) {
     total += Math.round(computeSamePackageBoost(config) * queryStrength);
   }
 
-  if (!activeDirectory || candidate.relativePath === context.activePath) {
+  if (
+    !activeDirectory ||
+    candidateIdentity === context.activeIdentityPath ||
+    (!context.activeIdentityPath && candidate.relativePath === context.activePath)
+  ) {
+    return total;
+  }
+
+  if (
+    context.activeWorkspaceFolderPath &&
+    candidate.workspaceFolderPath &&
+    context.activeWorkspaceFolderPath !== candidate.workspaceFolderPath
+  ) {
     return total;
   }
 
@@ -773,6 +823,14 @@ function getDirectory(relativePath?: string): string | undefined {
   const directory = segments.join("/");
 
   return directory || undefined;
+}
+
+function getCandidateIdentity(candidate: SearchCandidate): string {
+  return candidate.identityPath ?? candidate.relativePath;
+}
+
+function getCandidatePackageRootIdentity(candidate: SearchCandidate): string | undefined {
+  return candidate.packageRootIdentity ?? candidate.packageRoot;
 }
 
 function countSharedPrefixSegments(left: string, right: string): number {

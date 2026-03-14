@@ -137,6 +137,30 @@ export function renderContributorRelationshipsViewHtml(
         color: var(--vscode-descriptionForeground);
       }
 
+      .workspace-controls {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .select-control {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        color: var(--vscode-descriptionForeground);
+      }
+
+      .select-control select {
+        min-width: 240px;
+        max-width: min(420px, 70vw);
+        padding: 6px 10px;
+        border: 1px solid color-mix(in srgb, var(--vscode-panel-border) 80%, transparent);
+        border-radius: 10px;
+        color: var(--vscode-input-foreground);
+        background: var(--vscode-dropdown-background);
+      }
+
       .status-chip {
         display: inline-flex;
         align-items: center;
@@ -306,6 +330,25 @@ export function renderContributorRelationshipsViewHtml(
       </section>
       ${sections || '<section class="workspace"><div class="empty">No workspace folders are open.</div></section>'}
     </main>
+    <script>
+      const vscode = acquireVsCodeApi();
+
+      document.querySelectorAll("[data-contributor-select]").forEach((select) => {
+        select.addEventListener("change", (event) => {
+          const target = event.currentTarget;
+
+          if (!(target instanceof HTMLSelectElement)) {
+            return;
+          }
+
+          vscode.postMessage({
+            type: "selectContributor",
+            workspaceFolderPath: target.dataset.workspaceFolderPath,
+            contributorKey: target.value || undefined,
+          });
+        });
+      });
+    </script>
   </body>
 </html>`;
 }
@@ -403,7 +446,10 @@ function renderWorkspaceSection(
     <div class="workspace-header">
       <div class="workspace-title-row">
         <h2>${escapeHtml(snapshot.workspaceFolderName)}</h2>
-        <span class="status-chip">${escapeHtml(formatWorkspaceStatus(snapshot.status))}</span>
+        <div class="workspace-controls">
+          ${renderContributorSelect(snapshot)}
+          <span class="status-chip">${escapeHtml(formatWorkspaceStatus(snapshot.status))}</span>
+        </div>
       </div>
       <div class="workspace-meta">
         ${escapeHtml(snapshot.repoRootPath ?? snapshot.workspaceFolderPath)}
@@ -433,7 +479,7 @@ function buildSummaryCards(
 
   if (snapshot.currentContributor) {
     cards.unshift({
-      label: "Current contributor",
+      label: "Selected contributor",
       note: snapshot.currentContributor.email,
       value: formatContributorIdentity(snapshot.currentContributor),
     });
@@ -498,10 +544,39 @@ function renderWorkspaceMessage(snapshot: WorkspaceContributorRelationshipSnapsh
   }
 
   if (!snapshot.relationships.length) {
-    return "No overlapping contributors were found for the current contributor.";
+    return "No overlapping contributors were found for the selected contributor.";
   }
 
-  return "Rows are sorted by relationship score, with the current contributor pinned at the top for context.";
+  return "Rows are sorted by relationship score, with the selected contributor pinned at the top for context.";
+}
+
+function renderContributorSelect(snapshot: WorkspaceContributorRelationshipSnapshot): string {
+  if (!snapshot.contributors.length) {
+    return "";
+  }
+
+  const options = [
+    !snapshot.currentContributor
+      ? '<option value="" selected>Select a contributor</option>'
+      : '<option value="">Use detected contributor</option>',
+    ...snapshot.contributors.map((summary) => {
+      const contributor = summary.contributor;
+      const isSelected = contributor.key === snapshot.currentContributor?.key;
+
+      return `<option value="${escapeHtmlAttribute(contributor.key)}"${isSelected ? " selected" : ""}>${escapeHtml(formatContributorIdentity(contributor))}</option>`;
+    }),
+  ].join("");
+
+  return `<label class="select-control">
+    <span>View as</span>
+    <select
+      data-contributor-select
+      data-workspace-folder-path="${escapeHtmlAttribute(snapshot.workspaceFolderPath)}"
+      aria-label="Select contributor for ${escapeHtmlAttribute(snapshot.workspaceFolderName)}"
+    >
+      ${options}
+    </select>
+  </label>`;
 }
 
 function buildContributorRows(
@@ -656,4 +731,8 @@ function escapeHtml(value: string): string {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+function escapeHtmlAttribute(value: string): string {
+  return escapeHtml(value);
 }

@@ -11,6 +11,7 @@ export interface IconThemeData {
   readonly file?: string;
   readonly fileExtensions?: Record<string, string>;
   readonly fileNames?: Record<string, string>;
+  readonly languageIds?: Record<string, string>;
   readonly light?: IconThemeOverrideData;
   readonly highContrast?: IconThemeOverrideData;
 }
@@ -19,6 +20,7 @@ export interface IconThemeOverrideData {
   readonly file?: string;
   readonly fileExtensions?: Record<string, string>;
   readonly fileNames?: Record<string, string>;
+  readonly languageIds?: Record<string, string>;
 }
 
 export interface IconDefinition {
@@ -29,6 +31,7 @@ export interface IconThemeOverride {
   readonly file?: string;
   readonly fileExtensions: ReadonlyMap<string, string>;
   readonly fileNames: ReadonlyMap<string, string>;
+  readonly languageIds: ReadonlyMap<string, string>;
 }
 
 export interface InlineIconPath {

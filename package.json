@@ -72,7 +72,12 @@
             "hide"
           ],
           "default": "auto",
-          "markdownDescription": "Controls whether gitignored files appear in the picker. `auto` hides them unless the query looks specific."
+          "markdownDescription": "Controls whether gitignored files appear in the picker. `auto` only reveals them for exact filename queries that include an extension such as `.env.local` or `button.tsx`."
+        },
+        "betterGoToFile.workspaceIndex.fileGlob": {
+          "type": "string",
+          "default": "**/*",
+          "markdownDescription": "Glob used by the workspace index watcher and filesystem fallback scanner."
         },
         "betterGoToFile.workspaceIndex.excludedDirectories": {
           "type": "array",
@@ -90,6 +95,12 @@
             "coverage"
           ],
           "markdownDescription": "Directory segment names excluded from the workspace file index."
+        },
+        "betterGoToFile.workspaceIndex.maxFileCount": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "markdownDescription": "Maximum number of indexed files across the workspace. Use `0` to disable the cap."
         },
         "betterGoToFile.scoring.preset": {
           "type": "string",

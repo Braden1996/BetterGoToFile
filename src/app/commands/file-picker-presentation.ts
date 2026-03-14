@@ -3,11 +3,17 @@ interface FilePickerPendingState {
   readonly hasEntries: boolean;
   readonly isIndexing: boolean;
   readonly isRestoringSnapshot: boolean;
-  readonly isReadyForPicker: boolean;
+  readonly pickerReadiness: {
+    readonly isReady: boolean;
+    readonly isWorkspaceIndexReady: boolean;
+    readonly isFrecencyReady: boolean;
+    readonly isGitTrackingReady: boolean;
+    readonly isContributorRelationshipsReady: boolean;
+  };
   readonly query: string;
 }
 
-type FilePickerLockState = Omit<FilePickerPendingState, "query" | "isReadyForPicker">;
+type FilePickerLockState = Omit<FilePickerPendingState, "query" | "pickerReadiness">;
 
 export function formatFilePickerTitle(isSearching: boolean): string {
   return isSearching ? "Better Go To File - Searching..." : "Better Go To File";
@@ -16,12 +22,14 @@ export function formatFilePickerTitle(isSearching: boolean): string {
 export function getPendingFilePickerItem(
   state: FilePickerPendingState,
 ): { label: string; description: string; alwaysShow: true } | undefined {
-  if (!state.isReadyForPicker) {
+  if (!state.pickerReadiness.isReady) {
+    const waitDescription = formatPendingReadinessDescription(state.pickerReadiness);
+
     return {
       label: state.query.trim() ? "Searching workspace files..." : "Loading workspace files...",
       description: state.hasEntries
-        ? "Preparing tracked file metadata before showing cached results."
-        : "Preparing tracked file metadata.",
+        ? `${waitDescription} before showing cached results.`
+        : `${waitDescription}.`,
       alwaysShow: true,
     };
   }
@@ -54,4 +62,52 @@ export function shouldLockFilePickerEntries(state: FilePickerLockState): boolean
   }
 
   return !state.isIndexing && !state.isRestoringSnapshot;
+}
+
+function formatPendingReadinessDescription(
+  state: FilePickerPendingState["pickerReadiness"],
+): string {
+  const pendingRequirements = collectPendingRequirementLabels(state);
+
+  if (!pendingRequirements.length) {
+    return "Preparing search ranking";
+  }
+
+  return `Waiting for ${formatPendingRequirementLabels(pendingRequirements)}`;
+}
+
+function collectPendingRequirementLabels(
+  state: FilePickerPendingState["pickerReadiness"],
+): string[] {
+  const pendingRequirements: string[] = [];
+
+  if (!state.isWorkspaceIndexReady) {
+    pendingRequirements.push("workspace index");
+  }
+
+  if (!state.isFrecencyReady) {
+    pendingRequirements.push("recent visits");
+  }
+
+  if (!state.isGitTrackingReady) {
+    pendingRequirements.push("Git status");
+  }
+
+  if (!state.isContributorRelationshipsReady) {
+    pendingRequirements.push("contributor history");
+  }
+
+  return pendingRequirements;
+}
+
+function formatPendingRequirementLabels(labels: readonly string[]): string {
+  if (labels.length <= 1) {
+    return labels[0] ?? "";
+  }
+
+  if (labels.length === 2) {
+    return `${labels[0]} and ${labels[1]}`;
+  }
+
+  return `${labels.slice(0, -1).join(", ")}, and ${labels.at(-1)}`;
 }

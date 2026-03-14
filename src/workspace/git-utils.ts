@@ -1,6 +1,8 @@
 import { execFile } from "node:child_process";
+import { stat } from "node:fs/promises";
 import * as path from "node:path";
 import { promisify } from "node:util";
+import { parseGitStatusSnapshot, type GitStatusSnapshot } from "./git-status-snapshot";
 import { normalizePath } from "./path-normalization";
 
 const execFileAsync = promisify(execFile);
@@ -31,11 +33,7 @@ export async function loadWorkspaceFilePathsFromGit(
 ): Promise<readonly string[]> {
   const pathspecArgs = repoRelativeFolderPath ? ["--", repoRelativeFolderPath] : [];
   const [trackedPaths, untrackedPaths, ignoredPaths] = await Promise.all([
-    loadNulSeparatedGitPaths(
-      repoRootPath,
-      ["ls-files", "-z", "--cached", "--full-name"],
-      pathspecArgs,
-    ),
+    loadTrackedGitPaths(repoRootPath, pathspecArgs),
     loadNulSeparatedGitPaths(
       repoRootPath,
       ["ls-files", "-z", "--others", "--exclude-standard", "--full-name"],
@@ -62,6 +60,34 @@ export async function loadWorkspaceFilePathsFromGit(
   }
 
   return [...combinedPaths];
+}
+
+export async function loadGitStatusSnapshot(repoRootPath: string): Promise<GitStatusSnapshot> {
+  return parseGitStatusSnapshot(
+    await runGit(repoRootPath, [
+      "status",
+      "--porcelain=v2",
+      "-z",
+      "--branch",
+      "--find-renames",
+      "--ignored=matching",
+      "--untracked-files=all",
+    ]),
+  );
+}
+
+export async function loadGitIndexStamp(repoRootPath: string): Promise<string | undefined> {
+  try {
+    const rawIndexPath = (await runGit(repoRootPath, ["rev-parse", "--git-path", "index"])).trim();
+    const indexPath = path.isAbsolute(rawIndexPath)
+      ? rawIndexPath
+      : path.resolve(repoRootPath, rawIndexPath);
+    const indexStats = await stat(indexPath);
+
+    return `${indexStats.size}:${Math.trunc(indexStats.mtimeMs)}`;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function runGit(cwd: string, args: readonly string[]): Promise<string> {
@@ -100,6 +126,47 @@ async function loadNulSeparatedGitPaths(
 
     seenPaths.add(normalizedPath);
     paths.push(normalizedPath);
+  }
+
+  return paths;
+}
+
+async function loadTrackedGitPaths(
+  cwd: string,
+  pathspecArgs: readonly string[] = [],
+): Promise<readonly string[]> {
+  const stdout = await runGit(cwd, [
+    "ls-files",
+    "-z",
+    "--cached",
+    "--full-name",
+    "--stage",
+    ...pathspecArgs,
+  ]);
+  const paths: string[] = [];
+  const seenPaths = new Set<string>();
+
+  for (const entry of stdout.split("\u0000")) {
+    if (!entry) {
+      continue;
+    }
+
+    const separatorIndex = entry.indexOf("\t");
+
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const metadata = entry.slice(0, separatorIndex);
+    const relativePath = normalizePath(entry.slice(separatorIndex + 1));
+    const mode = metadata.split(" ", 1)[0];
+
+    if (!relativePath || seenPaths.has(relativePath) || mode === "120000") {
+      continue;
+    }
+
+    seenPaths.add(relativePath);
+    paths.push(relativePath);
   }
 
   return paths;

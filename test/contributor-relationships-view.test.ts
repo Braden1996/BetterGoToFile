@@ -15,11 +15,14 @@ describe("contributor relationships view", () => {
     expect(html).toContain("Relationship score blends fast and slow shared-area overlap");
     expect(html).toContain("Fast overlap");
     expect(html).toContain("Focus factor");
-    expect(html).toContain("Current contributor");
+    expect(html).toContain("Selected contributor");
+    expect(html).toContain("View as");
+    expect(html).toContain("data-contributor-select");
     expect(html).toContain("Alex");
     expect(html).toContain("72.0%");
     expect(html).toContain("packages/app/src/search, packages/app/src/shared");
     expect(html).toContain("Rows are sorted by relationship score");
+    expect(html).toContain("Use detected contributor");
   });
 
   test("explains when the configured contributor is missing but still shows contributor rows", () => {
@@ -31,6 +34,7 @@ describe("contributor relationships view", () => {
     expect(html).toContain("current contributor missing");
     expect(html).toContain("Configured contributor");
     expect(html).toContain("was not found in repository history");
+    expect(html).toContain("Select a contributor");
     expect(html).toContain("Taylor");
     expect(html).toContain("Morgan");
     expect(html).toContain("repository breadth");

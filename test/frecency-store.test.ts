@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
 import {
@@ -65,6 +65,39 @@ describe("frecency math", () => {
     store.updateOptions({ halfLifeMs: 2000, flushDelayMs: 0, maxRecords: 10 });
 
     expect(store.getCurrentScore("src/config.ts", now + 1000)).toBeGreaterThan(1.3);
+
+    store.dispose();
+  });
+
+  test("ignores malformed persisted snapshots and starts fresh", async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), "better-go-to-file-"));
+    const filePath = path.join(directory, "frecency.json");
+    const logs: string[] = [];
+
+    tempDirectories.push(directory);
+    await writeFile(filePath, "{not-valid-json", "utf8");
+
+    const store = new FrecencyStore(filePath, {
+      halfLifeMs: 1000,
+      flushDelayMs: 0,
+      log: (message) => {
+        logs.push(message);
+      },
+    });
+
+    await store.ready();
+
+    expect(store.getCurrentScore("src/config.ts", Date.now())).toBe(0);
+    expect(logs[0]).toContain("Failed to restore frecency cache");
+
+    store.recordOpen("src/config.ts", { now: Date.now(), weight: 2 });
+    await store.flush();
+
+    const persisted = JSON.parse(await readFile(filePath, "utf8")) as {
+      readonly records: Record<string, unknown>;
+    };
+
+    expect(persisted.records["src/config.ts"]).toBeDefined();
 
     store.dispose();
   });

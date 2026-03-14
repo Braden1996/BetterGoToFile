@@ -8,7 +8,11 @@ import {
   type SearchCandidate,
 } from "../src/search/search-ranking";
 
-function createCandidate(relativePath: string, packageRoot?: string): SearchCandidate {
+function createCandidate(
+  relativePath: string,
+  packageRoot?: string,
+  overrides: Partial<SearchCandidate> = {},
+): SearchCandidate {
   const segments = relativePath.split("/");
   const basename = segments[segments.length - 1];
   const directory = segments.slice(0, -1).join("/");
@@ -18,8 +22,12 @@ function createCandidate(relativePath: string, packageRoot?: string): SearchCand
     relativePath,
     directory,
     packageRoot,
+    identityPath: overrides.identityPath,
+    packageRootIdentity: overrides.packageRootIdentity,
+    workspaceFolderPath: overrides.workspaceFolderPath,
     searchBasename: basename.toLowerCase(),
     searchPath: relativePath.toLowerCase(),
+    ...overrides,
   };
 }
 
@@ -171,6 +179,52 @@ describe("rankSearchCandidates", () => {
     );
   });
 
+  test("scopes same-package and proximity boosts to the active workspace folder", () => {
+    const repoAEntry = createCandidate("packages/app/src/index.ts", "packages/app", {
+      identityPath: "/repo-a::packages/app/src/index.ts",
+      packageRootIdentity: "/repo-a::packages/app",
+      workspaceFolderPath: "/repo-a",
+    });
+    const repoBEntry = createCandidate("packages/app/src/index.ts", "packages/app", {
+      identityPath: "/repo-b::packages/app/src/index.ts",
+      packageRootIdentity: "/repo-b::packages/app",
+      workspaceFolderPath: "/repo-b",
+    });
+
+    const ranked = scoreSearchCandidates([repoAEntry, repoBEntry], "index", {
+      activePath: "packages/app/src/current.ts",
+      activeIdentityPath: "/repo-a::packages/app/src/current.ts",
+      activePackageRoot: "packages/app",
+      activePackageRootIdentity: "/repo-a::packages/app",
+      activeWorkspaceFolderPath: "/repo-a",
+    });
+
+    expect(ranked[0]?.candidate.identityPath).toBe(repoAEntry.identityPath);
+    expect(ranked[0]?.breakdown.context.contributions.map(({ label }) => label)).toEqual([
+      "same-pkg",
+      "same-dir",
+    ]);
+    expect(ranked[1]?.candidate.identityPath).toBe(repoBEntry.identityPath);
+    expect(ranked[1]?.breakdown.context.contributions).toEqual([]);
+  });
+
+  test("uses identity-scoped frecency for duplicate relative paths across roots", () => {
+    const repoAEntry = createCandidate("src/index.ts", undefined, {
+      identityPath: "/repo-a::src/index.ts",
+      workspaceFolderPath: "/repo-a",
+    });
+    const repoBEntry = createCandidate("src/index.ts", undefined, {
+      identityPath: "/repo-b::src/index.ts",
+      workspaceFolderPath: "/repo-b",
+    });
+
+    const ranked = rankSearchCandidates([repoAEntry, repoBEntry], "index", {
+      getFrecencyScore: (identityPath) => (identityPath === repoBEntry.identityPath ? 8 : 0),
+    });
+
+    expect(ranked[0]?.identityPath).toBe(repoBEntry.identityPath);
+  });
+
   test("significantly down ranks untracked files", () => {
     const candidates = [
       createCandidate("src/tracked/config.ts"),
@@ -312,17 +366,8 @@ describe("gitignored visibility", () => {
     expect(isSpecificQuery("conf.ts")).toBe(true);
   });
 
-  test("auto config shape no longer widens ignored-file visibility", () => {
+  test("auto only accepts the visibility mode", () => {
     expect(isSpecificQuery("abcd")).toBe(false);
-    expect(
-      shouldIncludeGitignoredFile("foo bar baz", {
-        visibility: "auto",
-        auto: {
-          minQueryLength: 1,
-          minTokenCount: 1,
-          revealOnPathSeparator: true,
-        },
-      }),
-    ).toBe(false);
+    expect(shouldIncludeGitignoredFile("foo bar baz", "auto")).toBe(false);
   });
 });

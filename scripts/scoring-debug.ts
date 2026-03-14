@@ -101,7 +101,6 @@ interface RepositoryContributorStateBase {
 export interface ReadyRepositoryContributorState extends RepositoryContributorStateBase {
   readonly status: "ready";
   readonly currentContributor: ContributorIdentity;
-  readonly packageRootDirectories: ReadonlySet<string>;
   readonly profile: ContributorSearchProfile;
 }
 
@@ -314,7 +313,7 @@ async function scoreRepositoryCandidates(
     options.workspaceStorageRoots,
   );
   const gitignoredVisibility =
-    options.gitignoredVisibility ?? DEFAULT_BETTER_GO_TO_FILE_CONFIG.gitignored.visibility;
+    options.gitignoredVisibility ?? DEFAULT_BETTER_GO_TO_FILE_CONFIG.gitignored;
   const visibleCandidates = candidates.filter((candidate) => {
     const gitTrackingState = getGitTrackingState(candidate.relativePath, gitState);
 
@@ -1046,11 +1045,7 @@ function createContributorPriorByPath(
   return new Map(
     candidates.map((candidate) => [
       candidate.relativePath,
-      scoreContributorFile(
-        contributorState.profile,
-        candidate.relativePath,
-        contributorState.packageRootDirectories,
-      ),
+      scoreContributorFile(contributorState.profile, candidate.relativePath),
     ]),
   );
 }
@@ -1120,7 +1115,6 @@ async function loadContributorSearchState(
     currentContributor: currentContributorSummary.contributor,
     contributorCount: graph.contributors.length,
     teammateCount: profile.teammateCount,
-    packageRootDirectories: collectPackageRootDirectories([...trackedPaths]),
     profile,
   };
 }

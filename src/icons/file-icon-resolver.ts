@@ -2,9 +2,6 @@ import * as vscode from "vscode";
 import type { FileEntry } from "../workspace";
 import { findIconThemeContribution, resolveIconThemeUri } from "./icon-theme-discovery";
 import {
-  findFileIconOverride,
-  findMatchingAssociation,
-  findMatchingAssociationInOverrides,
   isDefined,
   normalizeOptionalString,
   parseIconTheme,
@@ -12,6 +9,9 @@ import {
   readIconDefinitionPaths,
   readThemeOverride,
 } from "./icon-theme-parser";
+import { resolveThemeIconMatch } from "./icon-matcher";
+import { type LanguageAssociationResolver } from "./language-association-resolver";
+import { loadLanguageAssociationResolver } from "./language-association-discovery";
 import {
   createGitignoredFileIconPath,
   resolveRelativeUriFromFile,
@@ -63,6 +63,7 @@ export async function loadFileIconResolver(
       themeUri,
       parsedTheme,
       vscode.window.activeColorTheme.kind,
+      loadLanguageAssociationResolver(log),
     );
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -77,6 +78,7 @@ class ConfiguredFileIconResolver implements FileIconResolver {
   private readonly iconDefinitionPaths: ReadonlyMap<string, string>;
   private readonly fileExtensions: ReadonlyMap<string, string>;
   private readonly fileNames: ReadonlyMap<string, string>;
+  private readonly languageIds: ReadonlyMap<string, string>;
   private readonly lightOverride?: IconThemeOverride;
   private readonly highContrastOverride?: IconThemeOverride;
   private readonly iconPathCache = new Map<string, InlineIconPath | null>();
@@ -86,73 +88,68 @@ class ConfiguredFileIconResolver implements FileIconResolver {
     private readonly themeUri: vscode.Uri,
     themeData: IconThemeData,
     private readonly colorThemeKind: vscode.ColorThemeKind,
+    private readonly languageAssociationResolver: LanguageAssociationResolver,
   ) {
     this.defaultFileIconId = normalizeOptionalString(themeData.file);
     this.iconDefinitionPaths = readIconDefinitionPaths(themeData.iconDefinitions);
     this.fileExtensions = readAssociationMap(themeData.fileExtensions);
     this.fileNames = readAssociationMap(themeData.fileNames);
+    this.languageIds = readAssociationMap(themeData.languageIds);
     this.lightOverride = readThemeOverride(themeData.light);
     this.highContrastOverride = readThemeOverride(themeData.highContrast);
   }
 
   resolve(entry: FileEntry): vscode.IconPath | undefined {
-    const iconId = this.resolveIconId(entry);
+    const match = this.resolveIconMatch(entry);
 
-    if (!iconId) {
+    if (!match) {
       return undefined;
     }
 
-    return this.getIconPath(iconId);
+    return this.getIconPath(match.iconId);
   }
 
   resolveGitignored(entry: FileEntry): vscode.IconPath {
-    const iconId = this.resolveIconId(entry);
+    const match = this.resolveIconMatch(entry);
 
-    if (!iconId) {
+    if (!match) {
       return createGitignoredFileIconPath();
     }
 
-    return this.getGitignoredIconPath(iconId);
+    return this.getGitignoredIconPath(match.iconId);
   }
 
   describe(entry: FileEntry): string {
-    const iconId = this.resolveIconId(entry);
+    const match = this.resolveIconMatch(entry);
 
-    if (!iconId) {
+    if (!match) {
       return `${entry.relativePath}: no icon match, falling back`;
     }
 
-    const iconDefinitionPath = this.iconDefinitionPaths.get(iconId);
-    const iconPath = this.getIconPath(iconId);
+    const iconDefinitionPath = this.iconDefinitionPaths.get(match.iconId);
+    const iconPath = this.getIconPath(match.iconId);
 
     return [
       `path=${entry.relativePath}`,
-      `iconId=${iconId}`,
+      `iconId=${match.iconId}`,
+      `source=${match.source}`,
+      ...(match.languageId ? [`languageId=${match.languageId}`] : []),
       `definition=${iconDefinitionPath ?? "<missing>"}`,
       `customIcon=${iconPath ? "yes" : "no"}`,
     ].join(", ");
   }
 
-  private resolveIconId(entry: FileEntry): string | undefined {
-    const fileNameCandidates = buildFileNameCandidates(entry);
-    const extensionCandidates = buildExtensionCandidates(entry);
-
-    return (
-      findMatchingAssociationInOverrides(
-        this.getActiveOverrides(),
-        "fileNames",
-        fileNameCandidates,
-      ) ??
-      findMatchingAssociation(this.fileNames, fileNameCandidates) ??
-      findMatchingAssociationInOverrides(
-        this.getActiveOverrides(),
-        "fileExtensions",
-        extensionCandidates,
-      ) ??
-      findMatchingAssociation(this.fileExtensions, extensionCandidates) ??
-      findFileIconOverride(this.getActiveOverrides()) ??
-      this.defaultFileIconId
-    );
+  private resolveIconMatch(entry: FileEntry) {
+    return resolveThemeIconMatch(entry, {
+      defaultFileIconId: this.defaultFileIconId,
+      fileExtensions: this.fileExtensions,
+      fileNames: this.fileNames,
+      languageIds: this.languageIds,
+      overrides: this.getActiveOverrides(),
+      resolveLanguageId: this.languageAssociationResolver.resolve.bind(
+        this.languageAssociationResolver,
+      ),
+    });
   }
 
   private getActiveOverrides(): readonly IconThemeOverride[] {
@@ -204,33 +201,4 @@ class ConfiguredFileIconResolver implements FileIconResolver {
 
     return iconPath;
   }
-}
-
-function buildFileNameCandidates(entry: FileEntry): string[] {
-  const pathSegments = entry.searchPath.split("/").filter(Boolean);
-  const candidates = new Set<string>();
-
-  candidates.add(entry.searchBasename);
-  candidates.add(entry.searchPath);
-
-  for (let index = 1; index < pathSegments.length; index += 1) {
-    candidates.add(pathSegments.slice(index).join("/"));
-  }
-
-  return [...candidates].sort((left, right) => right.length - left.length);
-}
-
-function buildExtensionCandidates(entry: FileEntry): string[] {
-  const candidates: string[] = [];
-  const basename = entry.searchBasename;
-
-  for (let index = basename.indexOf("."); index >= 0; index = basename.indexOf(".", index + 1)) {
-    const candidate = basename.slice(index + 1);
-
-    if (candidate) {
-      candidates.push(candidate);
-    }
-  }
-
-  return candidates;
 }

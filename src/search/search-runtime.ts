@@ -16,6 +16,7 @@ import {
   type WorkspaceContributorRelationshipSnapshot,
   type WorkspaceFileIndexStatus,
   toRelativeWorkspacePath,
+  toWorkspacePathIdentity,
   WorkspaceFileIndex,
 } from "../workspace";
 import { FrecencyStore } from "./frecency-store";
@@ -26,11 +27,20 @@ export interface SearchRuntimeStatus {
   readonly openPathCount: number;
   readonly scoringPreset: BetterGoToFileConfig["scoring"]["preset"];
   readonly usingCustomScoring: boolean;
-  readonly gitignoredVisibility: BetterGoToFileConfig["gitignored"]["visibility"];
+  readonly gitignoredVisibility: BetterGoToFileConfig["gitignored"];
+  readonly pickerReadiness: SearchRuntimePickerReadinessStatus;
   readonly contributorRelationships: {
     readonly loadedWorkspaceFolderCount: number;
     readonly primarySnapshot?: WorkspaceContributorRelationshipSnapshot;
   };
+}
+
+export interface SearchRuntimePickerReadinessStatus {
+  readonly isReady: boolean;
+  readonly isWorkspaceIndexReady: boolean;
+  readonly isFrecencyReady: boolean;
+  readonly isGitTrackingReady: boolean;
+  readonly isContributorRelationshipsReady: boolean;
 }
 
 export class SearchRuntime implements vscode.Disposable {
@@ -44,9 +54,14 @@ export class SearchRuntime implements vscode.Disposable {
   private readonly cachedGitPriors = new Map<string, number>();
   private readonly cachedGitTrackingStates = new Map<string, GitTrackingState>();
   private config: BetterGoToFileConfig;
-  private openPaths = collectOpenPaths();
+  private openIdentityPaths = collectOpenIdentityPaths();
   private pendingTimer: ReturnType<typeof setTimeout> | undefined;
-  private isPickerReady = false;
+  private readonly pickerReadiness = {
+    isWorkspaceIndexReady: false,
+    isFrecencyReady: false,
+    isGitTrackingReady: false,
+    isContributorRelationshipsReady: false,
+  };
   private readonly pickerReadyPromise: Promise<void>;
 
   readonly onDidChange = this.emitter.event;
@@ -64,28 +79,50 @@ export class SearchRuntime implements vscode.Disposable {
     const workspaceIndexPersistencePath = context.storageUri
       ? path.join(context.storageUri.fsPath, "workspace-index.json")
       : undefined;
+    const gitTrackedIndexPersistencePath = context.storageUri
+      ? path.join(context.storageUri.fsPath, "git-tracked-index.json")
+      : undefined;
 
     this.index = new WorkspaceFileIndex(this.config.workspaceIndex, {
       persistenceFilePath: workspaceIndexPersistencePath,
       log,
     });
-    this.frecencyStore = new FrecencyStore(frecencyPath, this.config.frecency);
-    this.gitTrackedIndex = new GitTrackedIndex(this.config.git, log);
+    this.frecencyStore = new FrecencyStore(frecencyPath, {
+      ...this.config.frecency,
+      log,
+    });
+    this.gitTrackedIndex = new GitTrackedIndex(this.config.git, {
+      persistenceFilePath: gitTrackedIndexPersistencePath,
+      log,
+    });
     this.contributorRelationshipIndex = new ContributorRelationshipIndex(
       context.storageUri
         ? path.join(context.storageUri.fsPath, "contributor-relationships")
         : undefined,
       log,
     );
-    this.pickerReadyPromise = Promise.all([
+    const indexReadyPromise = this.trackPickerDependencyReady(
+      "isWorkspaceIndexReady",
       this.index.ready(),
+    );
+    const frecencyReadyPromise = this.trackPickerDependencyReady(
+      "isFrecencyReady",
       this.frecencyStore.ready(),
+    );
+    const gitTrackingReadyPromise = this.trackPickerDependencyReady(
+      "isGitTrackingReady",
       this.gitTrackedIndex.ready(),
-    ]).then(() => {
-      this.isPickerReady = true;
-      this.emitter.fire();
-    });
-
+    );
+    const contributorRelationshipsReadyPromise = this.trackPickerDependencyReady(
+      "isContributorRelationshipsReady",
+      this.contributorRelationshipIndex.ready(),
+    );
+    this.pickerReadyPromise = Promise.all([
+      indexReadyPromise,
+      frecencyReadyPromise,
+      gitTrackingReadyPromise,
+      contributorRelationshipsReadyPromise,
+    ]).then(() => undefined);
     this.disposables.push(
       this.emitter,
       this.configStore,
@@ -115,7 +152,7 @@ export class SearchRuntime implements vscode.Disposable {
         this.emitter.fire();
       }),
       vscode.window.tabGroups.onDidChangeTabs(() => {
-        this.openPaths = collectOpenPaths();
+        this.openIdentityPaths = collectOpenIdentityPaths();
         this.emitter.fire();
       }),
     );
@@ -128,7 +165,7 @@ export class SearchRuntime implements vscode.Disposable {
   }
 
   isReadyForPicker(): boolean {
-    return this.isPickerReady;
+    return Object.values(this.pickerReadiness).every(Boolean);
   }
 
   getConfig(): BetterGoToFileConfig {
@@ -144,10 +181,14 @@ export class SearchRuntime implements vscode.Disposable {
 
     return {
       index: this.index.getStatus(),
-      openPathCount: this.openPaths.size,
+      openPathCount: this.openIdentityPaths.size,
       scoringPreset: this.config.scoring.preset,
       usingCustomScoring: isUsingCustomScoring(this.config),
-      gitignoredVisibility: this.config.gitignored.visibility,
+      gitignoredVisibility: this.config.gitignored,
+      pickerReadiness: {
+        isReady: this.isReadyForPicker(),
+        ...this.pickerReadiness,
+      },
       contributorRelationships: {
         loadedWorkspaceFolderCount: contributorRelationshipSnapshots.length,
         primarySnapshot: getPrimaryContributorRelationshipSnapshot(
@@ -160,26 +201,32 @@ export class SearchRuntime implements vscode.Disposable {
   buildRankingContext(): FileSearchRankingContext {
     const now = Date.now();
     const activePath = getActivePath();
+    const activeIdentityPath = getActiveIdentityPath();
+    const activeEntry = activeIdentityPath ? this.index.getEntry(activeIdentityPath) : undefined;
+    const activeWorkspaceFolderPath = getActiveWorkspaceFolderPath();
     const frecencyScores = new Map<string, number>();
 
     return {
-      activePath,
-      activePackageRoot: activePath ? this.index.getEntry(activePath)?.packageRoot : undefined,
-      openPaths: this.openPaths,
-      getFrecencyScore: (relativePath) => {
-        const cachedScore = frecencyScores.get(relativePath);
+      activePath: activeEntry?.relativePath ?? activePath,
+      activeIdentityPath,
+      activePackageRoot: activeEntry?.packageRoot,
+      activePackageRootIdentity: activeEntry?.packageRootIdentity,
+      activeWorkspaceFolderPath,
+      openIdentityPaths: this.openIdentityPaths,
+      getFrecencyScore: (identityPath) => {
+        const cachedScore = frecencyScores.get(identityPath);
 
         if (cachedScore !== undefined) {
           return cachedScore;
         }
 
-        const score = this.frecencyStore.getCurrentScore(relativePath, now);
+        const score = this.frecencyStore.getCurrentScore(identityPath, now);
 
-        frecencyScores.set(relativePath, score);
+        frecencyScores.set(identityPath, score);
         return score;
       },
       getGitPrior: (entry) => {
-        const cachedPrior = this.cachedGitPriors.get(entry.relativePath);
+        const cachedPrior = this.cachedGitPriors.get(entry.identityPath);
 
         if (cachedPrior !== undefined) {
           return cachedPrior;
@@ -187,11 +234,11 @@ export class SearchRuntime implements vscode.Disposable {
 
         const prior = this.getGitPrior(entry);
 
-        this.cachedGitPriors.set(entry.relativePath, prior);
+        this.cachedGitPriors.set(entry.identityPath, prior);
         return prior;
       },
       getGitTrackingState: (entry) => {
-        const cachedState = this.cachedGitTrackingStates.get(entry.relativePath);
+        const cachedState = this.cachedGitTrackingStates.get(entry.identityPath);
 
         if (cachedState !== undefined) {
           return cachedState;
@@ -199,17 +246,17 @@ export class SearchRuntime implements vscode.Disposable {
 
         const gitTrackingState = this.gitTrackedIndex.getTrackingState(entry.uri);
 
-        this.cachedGitTrackingStates.set(entry.relativePath, gitTrackingState);
+        this.cachedGitTrackingStates.set(entry.identityPath, gitTrackingState);
         return gitTrackingState;
       },
     };
   }
 
-  recordExplicitOpen(relativePath: string): void {
+  recordExplicitOpen(identityPath: string): void {
     const now = Date.now();
 
-    this.rememberVisit(relativePath, now);
-    this.frecencyStore.recordOpen(relativePath, {
+    this.rememberVisit(identityPath, now);
+    this.frecencyStore.recordOpen(identityPath, {
       now,
       weight: this.config.visits.explicitOpenWeight,
     });
@@ -219,6 +266,14 @@ export class SearchRuntime implements vscode.Disposable {
     readonly WorkspaceContributorRelationshipSnapshot[]
   > {
     return this.contributorRelationshipIndex.inspectWorkspaceFolders();
+  }
+
+  async inspectContributorRelationshipsForSelection(
+    selectedContributorKeysByWorkspaceFolderPath: ReadonlyMap<string, string>,
+  ): Promise<readonly WorkspaceContributorRelationshipSnapshot[]> {
+    return this.contributorRelationshipIndex.inspectWorkspaceFoldersForSelection(
+      selectedContributorKeysByWorkspaceFolderPath,
+    );
   }
 
   async refreshIndex(): Promise<void> {
@@ -239,7 +294,10 @@ export class SearchRuntime implements vscode.Disposable {
   private applyConfig(config: BetterGoToFileConfig): void {
     this.config = config;
     this.index.updateConfig(config.workspaceIndex);
-    this.frecencyStore.updateOptions(config.frecency);
+    this.frecencyStore.updateOptions({
+      ...config.frecency,
+      log: this.log,
+    });
     this.gitTrackedIndex.updateConfig(config.git);
     this.cachedGitPriors.clear();
     this.cachedGitTrackingStates.clear();
@@ -253,42 +311,42 @@ export class SearchRuntime implements vscode.Disposable {
       this.pendingTimer = undefined;
     }
 
-    const relativePath = editor ? toRelativeWorkspacePath(editor.document.uri) : undefined;
+    const identityPath = editor ? toWorkspacePathIdentity(editor.document.uri) : undefined;
 
-    if (!relativePath) {
+    if (!identityPath) {
       return;
     }
 
     this.pendingTimer = setTimeout(() => {
       this.pendingTimer = undefined;
-      this.recordImplicitOpen(relativePath);
+      this.recordImplicitOpen(identityPath);
     }, this.config.visits.editorDwellMs);
   }
 
-  private recordImplicitOpen(relativePath: string): void {
+  private recordImplicitOpen(identityPath: string): void {
     const now = Date.now();
 
-    if (this.isDuplicateVisit(relativePath, now)) {
+    if (this.isDuplicateVisit(identityPath, now)) {
       return;
     }
 
-    this.rememberVisit(relativePath, now);
-    this.frecencyStore.recordOpen(relativePath, {
+    this.rememberVisit(identityPath, now);
+    this.frecencyStore.recordOpen(identityPath, {
       now,
       weight: this.config.visits.implicitOpenWeight,
     });
   }
 
-  private isDuplicateVisit(relativePath: string, now: number): boolean {
-    const lastVisit = this.recentVisits.get(relativePath);
+  private isDuplicateVisit(identityPath: string, now: number): boolean {
+    const lastVisit = this.recentVisits.get(identityPath);
 
     return (
       typeof lastVisit === "number" && now - lastVisit < this.config.visits.duplicateVisitWindowMs
     );
   }
 
-  private rememberVisit(relativePath: string, now: number): void {
-    this.recentVisits.set(relativePath, now);
+  private rememberVisit(identityPath: string, now: number): void {
+    this.recentVisits.set(identityPath, now);
 
     for (const [pathKey, lastVisit] of this.recentVisits.entries()) {
       if (now - lastVisit > this.config.visits.duplicateVisitWindowMs) {
@@ -316,21 +374,31 @@ export class SearchRuntime implements vscode.Disposable {
     }
 
     const contributorPrior = contributorState
-      ? scoreContributorFile(
-          contributorState.profile,
-          repoRelativePath,
-          contributorState.packageRootDirectories,
-        ).total
+      ? scoreContributorFile(contributorState.profile, repoRelativePath).total
       : 0;
     const sessionPrior = sessionState
       ? scoreGitSessionOverlay(
           sessionState.sessionOverlay,
           repoRelativePath,
-          sessionState.packageRootDirectories,
+          sessionState.areaMetadata,
         )
       : 0;
 
     return contributorPrior + 1.6 * sessionPrior;
+  }
+
+  private trackPickerDependencyReady(
+    key: keyof typeof this.pickerReadiness,
+    readyPromise: Promise<void>,
+  ): Promise<void> {
+    return readyPromise.then(() => {
+      if (this.pickerReadiness[key]) {
+        return;
+      }
+
+      this.pickerReadiness[key] = true;
+      this.emitter.fire();
+    });
   }
 }
 
@@ -340,7 +408,22 @@ function getActivePath(): string | undefined {
   return activeEditor ? toRelativeWorkspacePath(activeEditor.document.uri) : undefined;
 }
 
-function collectOpenPaths(): Set<string> {
+function getActiveIdentityPath(): string | undefined {
+  const activeEditor = vscode.window.activeTextEditor;
+
+  return activeEditor ? toWorkspacePathIdentity(activeEditor.document.uri) : undefined;
+}
+
+function getActiveWorkspaceFolderPath(): string | undefined {
+  const activeEditor = vscode.window.activeTextEditor;
+  const workspaceFolder = activeEditor
+    ? vscode.workspace.getWorkspaceFolder(activeEditor.document.uri)
+    : undefined;
+
+  return workspaceFolder?.uri.fsPath;
+}
+
+function collectOpenIdentityPaths(): Set<string> {
   const paths = new Set<string>();
 
   for (const group of vscode.window.tabGroups.all) {
@@ -367,10 +450,10 @@ function collectOpenPaths(): Set<string> {
 }
 
 function maybeAddPath(paths: Set<string>, uri: vscode.Uri): void {
-  const relativePath = toRelativeWorkspacePath(uri);
+  const identityPath = toWorkspacePathIdentity(uri);
 
-  if (relativePath) {
-    paths.add(relativePath);
+  if (identityPath) {
+    paths.add(identityPath);
   }
 }
 

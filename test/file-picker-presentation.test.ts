@@ -18,7 +18,7 @@ describe("file picker presentation", () => {
         hasEntries: false,
         isIndexing: true,
         isRestoringSnapshot: false,
-        isReadyForPicker: true,
+        pickerReadiness: createPickerReadiness({ isReady: true }),
         query: "",
       }),
     ).toEqual({
@@ -35,7 +35,7 @@ describe("file picker presentation", () => {
         hasEntries: false,
         isIndexing: true,
         isRestoringSnapshot: false,
-        isReadyForPicker: true,
+        pickerReadiness: createPickerReadiness({ isReady: true }),
         query: "src/search",
       }),
     ).toEqual({
@@ -52,7 +52,7 @@ describe("file picker presentation", () => {
         hasEntries: true,
         isIndexing: true,
         isRestoringSnapshot: false,
-        isReadyForPicker: true,
+        pickerReadiness: createPickerReadiness({ isReady: true }),
         query: "src",
       }),
     ).toBeUndefined();
@@ -63,25 +63,53 @@ describe("file picker presentation", () => {
         hasEntries: false,
         isIndexing: false,
         isRestoringSnapshot: false,
-        isReadyForPicker: true,
+        pickerReadiness: createPickerReadiness({ isReady: true }),
         query: "src",
       }),
     ).toBeUndefined();
   });
 
-  test("keeps cached entries hidden until picker metadata is ready", () => {
+  test("keeps cached entries hidden while specific ranking inputs are still loading", () => {
     expect(
       getPendingFilePickerItem({
         currentSource: "cache",
         hasEntries: true,
         isIndexing: true,
         isRestoringSnapshot: false,
-        isReadyForPicker: false,
+        pickerReadiness: createPickerReadiness({
+          isReady: false,
+          isGitTrackingReady: false,
+          isContributorRelationshipsReady: false,
+        }),
         query: "button",
       }),
     ).toEqual({
       label: "Searching workspace files...",
-      description: "Preparing tracked file metadata before showing cached results.",
+      description: "Waiting for Git status and contributor history before showing cached results.",
+      alwaysShow: true,
+    });
+  });
+
+  test("lists all pending ranking inputs while the picker is still warming up", () => {
+    expect(
+      getPendingFilePickerItem({
+        currentSource: "empty",
+        hasEntries: false,
+        isIndexing: true,
+        isRestoringSnapshot: false,
+        pickerReadiness: createPickerReadiness({
+          isReady: false,
+          isWorkspaceIndexReady: false,
+          isFrecencyReady: false,
+          isGitTrackingReady: false,
+          isContributorRelationshipsReady: false,
+        }),
+        query: "",
+      }),
+    ).toEqual({
+      label: "Loading workspace files...",
+      description:
+        "Waiting for workspace index, recent visits, Git status, and contributor history.",
       alwaysShow: true,
     });
   });
@@ -108,3 +136,28 @@ describe("file picker presentation", () => {
     ).toBe(true);
   });
 });
+
+function createPickerReadiness(
+  overrides: Partial<{
+    isReady: boolean;
+    isWorkspaceIndexReady: boolean;
+    isFrecencyReady: boolean;
+    isGitTrackingReady: boolean;
+    isContributorRelationshipsReady: boolean;
+  }> = {},
+): {
+  isReady: boolean;
+  isWorkspaceIndexReady: boolean;
+  isFrecencyReady: boolean;
+  isGitTrackingReady: boolean;
+  isContributorRelationshipsReady: boolean;
+} {
+  return {
+    isReady: true,
+    isWorkspaceIndexReady: true,
+    isFrecencyReady: true,
+    isGitTrackingReady: true,
+    isContributorRelationshipsReady: true,
+    ...overrides,
+  };
+}

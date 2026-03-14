@@ -1,35 +1,103 @@
 import { DEFAULT_BETTER_GO_TO_FILE_CONFIG, type PickerDescriptionConfig } from "../config/schema";
 import type { FileEntry, GitTrackingState } from "../workspace";
 
+const ELLIPSIS = "…";
+const MIN_TRUNCATED_LABEL_WIDTH_UNITS = 12;
+const MIN_TRUNCATED_LABEL_RETAINED_RATIO = 0.45;
+
+interface FilePickPresentation {
+  readonly label: string;
+  readonly description: string | undefined;
+}
+
+export function buildFilePickPresentation(
+  entry: FileEntry,
+  query: string,
+  gitTrackingState: GitTrackingState,
+  config: PickerDescriptionConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.picker.description,
+): FilePickPresentation {
+  const descriptionCandidates = buildDisplayDescriptionCandidates(
+    entry,
+    query,
+    gitTrackingState,
+    config,
+  );
+  const populatedDescriptionCandidates = descriptionCandidates.filter(isDefined);
+
+  for (const description of populatedDescriptionCandidates) {
+    if (fitsWithinRow(entry.basename, description, config)) {
+      return {
+        label: entry.basename,
+        description,
+      };
+    }
+  }
+
+  for (const description of populatedDescriptionCandidates) {
+    const availableLabelWidth = getAvailableLabelWidth(description, config);
+
+    if (availableLabelWidth < MIN_TRUNCATED_LABEL_WIDTH_UNITS) {
+      continue;
+    }
+
+    const truncatedLabel = truncateMiddle(entry.basename, availableLabelWidth);
+
+    if (truncatedLabel === entry.basename) {
+      return {
+        label: entry.basename,
+        description,
+      };
+    }
+
+    if (!isMeaningfulLabelTruncation(entry.basename, truncatedLabel)) {
+      continue;
+    }
+
+    return {
+      label: truncatedLabel,
+      description,
+    };
+  }
+
+  if (fitsWithinRow(entry.basename, undefined, config)) {
+    return {
+      label: entry.basename,
+      description: undefined,
+    };
+  }
+
+  return {
+    label: truncateMiddle(entry.basename, config.maxRowWidthUnits),
+    description: populatedDescriptionCandidates.at(-1),
+  };
+}
+
 export function buildFilePickDescription(
   entry: FileEntry,
   query: string,
   gitTrackingState: GitTrackingState,
   config: PickerDescriptionConfig = DEFAULT_BETTER_GO_TO_FILE_CONFIG.picker.description,
 ): string | undefined {
-  const segments = [entry.workspaceFolderName, ...splitSegments(entry.directory)].filter(isDefined);
-  const gitTag = gitTrackingState === "ignored" ? "[gitignored]" : undefined;
+  const descriptionCandidates = buildDisplayDescriptionCandidates(
+    entry,
+    query,
+    gitTrackingState,
+    config,
+  ).filter(isDefined);
 
-  if (!segments.length) {
-    return gitTag;
+  if (!descriptionCandidates.length) {
+    return undefined;
   }
 
-  const queryTokens = tokenizeQuery(query).filter((token) => token.length > 1);
   const availableWidth = getAvailableDescriptionWidth(entry.basename, config);
-  const alwaysKeptIndices = collectAlwaysKeptIndices(
-    segments,
-    entry.workspaceFolderName,
-    entry.packageRoot,
-  );
-  const candidates = buildDescriptionCandidates(segments, queryTokens, alwaysKeptIndices, config);
 
-  for (const candidate of candidates) {
+  for (const candidate of descriptionCandidates) {
     if (estimateTextWidth(candidate) <= availableWidth) {
-      return appendStatusTag(candidate, gitTag);
+      return candidate;
     }
   }
 
-  return appendStatusTag(candidates[candidates.length - 1], gitTag);
+  return descriptionCandidates[descriptionCandidates.length - 1];
 }
 
 function tokenizeQuery(query: string): string[] {
@@ -110,6 +178,37 @@ function buildDescriptionCandidates(
   candidates.add(collapseToTail(segments, alwaysKeptIndices, 1));
 
   return [...candidates];
+}
+
+function buildDisplayDescriptionCandidates(
+  entry: FileEntry,
+  query: string,
+  gitTrackingState: GitTrackingState,
+  config: PickerDescriptionConfig,
+): (string | undefined)[] {
+  const segments = [entry.workspaceFolderName, ...splitSegments(entry.directory)].filter(isDefined);
+  const gitTag = gitTrackingState === "ignored" ? "[gitignored]" : undefined;
+
+  if (!segments.length) {
+    return gitTag ? [gitTag, undefined] : [undefined];
+  }
+
+  const queryTokens = tokenizeQuery(query).filter((token) => token.length > 1);
+  const alwaysKeptIndices = collectAlwaysKeptIndices(
+    segments,
+    entry.workspaceFolderName,
+    entry.packageRoot,
+  );
+  const candidates = buildDescriptionCandidates(segments, queryTokens, alwaysKeptIndices, config);
+  const displayCandidates = candidates.map((candidate) => appendStatusTag(candidate, gitTag));
+
+  if (gitTag) {
+    displayCandidates.push(gitTag);
+  }
+
+  displayCandidates.push(undefined);
+
+  return [...new Set(displayCandidates)];
 }
 
 function collapseToTail(
@@ -207,11 +306,137 @@ function collapseSegments(segments: readonly string[], keptIndices: ReadonlySet<
   return collapsed.join("/");
 }
 
+function fitsWithinRow(
+  label: string,
+  description: string | undefined,
+  config: PickerDescriptionConfig,
+): boolean {
+  return getRowWidth(label, description, config) <= config.maxRowWidthUnits;
+}
+
+function getRowWidth(
+  label: string,
+  description: string | undefined,
+  config: PickerDescriptionConfig,
+): number {
+  return estimateTextWidth(label) + getDescriptionDisplayWidth(description, config);
+}
+
+function getAvailableLabelWidth(
+  description: string | undefined,
+  config: PickerDescriptionConfig,
+): number {
+  return Math.max(0, config.maxRowWidthUnits - getDescriptionDisplayWidth(description, config));
+}
+
 function getAvailableDescriptionWidth(basename: string, config: PickerDescriptionConfig): number {
   return Math.max(
     config.minDescriptionWidthUnits,
     config.maxRowWidthUnits - estimateTextWidth(basename) - config.labelPaddingWidthUnits,
   );
+}
+
+function getDescriptionDisplayWidth(
+  description: string | undefined,
+  config: PickerDescriptionConfig,
+): number {
+  if (!description) {
+    return 0;
+  }
+
+  return config.labelPaddingWidthUnits + estimateTextWidth(description);
+}
+
+function truncateMiddle(value: string, maxWidth: number): string {
+  if (estimateTextWidth(value) <= maxWidth) {
+    return value;
+  }
+
+  if (maxWidth <= estimateTextWidth(ELLIPSIS)) {
+    return ELLIPSIS;
+  }
+
+  const characters = [...value];
+
+  if (characters.length <= 2) {
+    return ELLIPSIS;
+  }
+
+  const extensionWidth = estimateTextWidth(getExtension(value));
+  const targetSuffixWidth = Math.min(
+    maxWidth - estimateTextWidth(ELLIPSIS),
+    Math.max(maxWidth * 0.55, extensionWidth + 4),
+  );
+  let prefixEnd = 0;
+  let prefixWidth = 0;
+  let suffixStart = characters.length;
+  let suffixWidth = 0;
+
+  while (
+    suffixStart > 1 &&
+    suffixWidth + estimateCharacterWidth(characters[suffixStart - 1] ?? "") <= targetSuffixWidth
+  ) {
+    suffixStart -= 1;
+    suffixWidth += estimateCharacterWidth(characters[suffixStart] ?? "");
+  }
+
+  while (
+    prefixEnd < suffixStart - 1 &&
+    prefixWidth + suffixWidth + estimateTextWidth(ELLIPSIS) <= maxWidth
+  ) {
+    const nextWidth = estimateCharacterWidth(characters[prefixEnd] ?? "");
+
+    if (prefixWidth + suffixWidth + nextWidth + estimateTextWidth(ELLIPSIS) > maxWidth) {
+      break;
+    }
+
+    prefixWidth += nextWidth;
+    prefixEnd += 1;
+  }
+
+  while (
+    suffixStart > prefixEnd + 1 &&
+    prefixWidth + suffixWidth + estimateTextWidth(ELLIPSIS) <= maxWidth
+  ) {
+    const nextWidth = estimateCharacterWidth(characters[suffixStart - 1] ?? "");
+
+    if (prefixWidth + suffixWidth + nextWidth + estimateTextWidth(ELLIPSIS) > maxWidth) {
+      break;
+    }
+
+    suffixStart -= 1;
+    suffixWidth += nextWidth;
+  }
+
+  if (prefixEnd === 0) {
+    prefixEnd = 1;
+  }
+
+  if (suffixStart <= prefixEnd) {
+    suffixStart = Math.min(prefixEnd + 1, characters.length - 1);
+  }
+
+  const prefix = characters.slice(0, prefixEnd).join("");
+  const suffix = characters.slice(suffixStart).join("");
+
+  return `${prefix}${ELLIPSIS}${suffix}`;
+}
+
+function getExtension(value: string): string {
+  const extensionStart = value.lastIndexOf(".");
+
+  return extensionStart > 0 ? value.slice(extensionStart) : "";
+}
+
+function isMeaningfulLabelTruncation(original: string, truncated: string): boolean {
+  const retainedWidth = Math.max(0, estimateTextWidth(truncated) - estimateTextWidth(ELLIPSIS));
+  const originalWidth = estimateTextWidth(original);
+
+  if (originalWidth === 0) {
+    return true;
+  }
+
+  return retainedWidth / originalWidth >= MIN_TRUNCATED_LABEL_RETAINED_RATIO;
 }
 
 function estimateTextWidth(value: string): number {
@@ -225,27 +450,47 @@ function estimateTextWidth(value: string): number {
 }
 
 function estimateCharacterWidth(char: string): number {
-  if (char === "…") {
-    return 1.4;
-  }
-
-  if (char === "/" || char === "\\" || char === "." || char === "-" || char === "_") {
-    return 0.65;
-  }
-
-  if (char === " ") {
-    return 0.45;
-  }
-
-  if (/[A-Z]/.test(char)) {
+  if (char === ELLIPSIS) {
     return 1.1;
   }
 
-  if (/[a-z0-9]/.test(char)) {
+  if (char === " ") {
+    return 0.4;
+  }
+
+  if (char === "/" || char === "\\" || char === "." || char === "-" || char === "_") {
+    return 0.55;
+  }
+
+  if (/[()[\]{}'`",;:!]/.test(char)) {
+    return 0.6;
+  }
+
+  if (/[ijlI1|]/.test(char)) {
+    return 0.55;
+  }
+
+  if (/[frtJ]/.test(char)) {
+    return 0.75;
+  }
+
+  if (/[mwMW@#%&]/.test(char)) {
+    return 1.3;
+  }
+
+  if (/[A-Z]/.test(char)) {
     return 1;
   }
 
-  return 1.2;
+  if (/[0-9]/.test(char)) {
+    return 0.95;
+  }
+
+  if (/[a-z]/.test(char)) {
+    return 0.9;
+  }
+
+  return 1.05;
 }
 
 function appendStatusTag(value: string | undefined, tag: string | undefined): string | undefined {

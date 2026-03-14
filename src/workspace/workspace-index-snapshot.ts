@@ -216,6 +216,7 @@ function collectDirectoryEntries(
         packageRoot,
         workspaceFolderPath: snapshot.workspaceFolderPath,
         workspaceFolderName: isMultiRoot ? snapshot.workspaceFolderName : undefined,
+        isMultiRoot,
       }),
     );
   }

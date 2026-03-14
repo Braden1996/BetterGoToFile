@@ -39,6 +39,7 @@ export function readThemeOverride(value: unknown): IconThemeOverride | undefined
     file: normalizeOptionalString(value["file"]),
     fileExtensions: readAssociationMap(value["fileExtensions"]),
     fileNames: readAssociationMap(value["fileNames"]),
+    languageIds: readAssociationMap(value["languageIds"]),
   };
 }
 
@@ -79,7 +80,7 @@ export function findMatchingAssociation(
 
 export function findMatchingAssociationInOverrides(
   overrides: readonly IconThemeOverride[],
-  key: "fileNames" | "fileExtensions",
+  key: "fileNames" | "fileExtensions" | "languageIds",
   candidates: readonly string[],
 ): string | undefined {
   for (const override of overrides) {

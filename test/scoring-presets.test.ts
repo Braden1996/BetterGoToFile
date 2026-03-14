@@ -15,8 +15,8 @@ describe("scoring presets", () => {
     expect(preset.ranking.lexical.basenameExactScore).toBeGreaterThan(
       preset.ranking.lexical.basenamePrefixScore,
     );
-    expect(preset.ranking.context.openBrowseBoost).toBeGreaterThan(
-      preset.ranking.context.openQueryBoost,
+    expect(preset.ranking.context.frecencyBrowseMultiplier).toBeGreaterThan(
+      preset.ranking.context.frecencyQueryMultiplier,
     );
   });
 
@@ -41,7 +41,7 @@ describe("scoring presets", () => {
     expect(preset.visits.implicitOpenWeight).toBe(1);
     expect(preset.ranking.lexical.basenameFuzzyBonus).toBe(900);
     expect(preset.ranking.context.openQueryBoost).toBe(120);
-    expect(preset.ranking.context.openBrowseBoost).toBe(140);
+    expect(preset.ranking.context.frecencyBrowseMultiplier).toBe(110);
   });
 
   test("sanitizes invalid override values away", () => {
@@ -57,7 +57,7 @@ describe("scoring presets", () => {
           pathFuzzyBonus: 1200,
         },
         context: {
-          openBrowseBoost: Infinity,
+          openQueryBoost: Infinity,
         },
       },
     });
